@@ -1,0 +1,517 @@
+{
+  "contractId": "API-EXT-004",
+  "contractVersion": "chrome-app-authorization-client.v2",
+  "adr": "0015",
+  "packageName": "@q1travel/app-authorization-chrome-extension",
+  "packaging": {
+    "repositoryName": "q1travel-app-authorization",
+    "directories": [
+      "packages/chrome-extension/src/background-runtime",
+      "packages/chrome-extension/src/chrome-adapter",
+      "packages/chrome-extension/src/core",
+      "packages/chrome-extension/src/ui-facade",
+      "packages/chrome-extension/test/conformance"
+    ],
+    "testingEntry": "@q1travel/app-authorization-chrome-extension/testing",
+    "versionRange": "0.x",
+    "dependencyStyle": "exact",
+    "rangeSpecifiersAllowed": false
+  },
+  "revision": {
+    "baseApiRevision": "81ce39cba6c343c0f64e4e1637083fcaefa4c0ea",
+    "pinnedApiRevision": null,
+    "consumerMayPin": false
+  },
+  "publicApi": {
+    "backgroundRuntime": [
+      "configure",
+      "start",
+      "status",
+      "login",
+      "focusAuthorization",
+      "logout",
+      "revoke",
+      "authorizedFetch"
+    ],
+    "uiFacade": [
+      "status",
+      "login",
+      "focusAuthorization",
+      "logout",
+      "revoke",
+      "authorizedFetch"
+    ],
+    "uiFacadeForbiddenMethods": [
+      "configure",
+      "start"
+    ],
+    "factories": [
+      "createChromeAppAuthorizationRuntime",
+      "createChromeAppAuthorizationUiFacade"
+    ]
+  },
+  "interaction": {
+    "snapshotFields": [
+      "profile",
+      "runtime",
+      "authorization",
+      "interaction"
+    ],
+    "driver": "same-window-tab-web-bridge",
+    "loginReturnsAfter": "auth-tab-bound-and-navigation-started",
+    "loginWaitsForCompletion": false,
+    "transactionLifetimeMs": 600000,
+    "serverAuthorizationCodeLifetimeMs": 60000,
+    "tokenExchangeTimeoutMs": 15000,
+    "webMessageTimeoutMs": 20000,
+    "transaction": {
+      "storage": "chrome.storage.session",
+      "accessLevel": "TRUSTED_CONTEXTS",
+      "binding": "two-phase",
+      "phases": [
+        "opening",
+        "authorizing",
+        "exchanging"
+      ],
+      "openingAuthTabId": "null-or-number",
+      "activeAuthTabId": "number",
+      "bootstrapReportRecovery": true,
+      "alarmCleanup": true
+    },
+    "listeners": {
+      "registration": "top-level-synchronous",
+      "events": [
+        "runtime.onMessage",
+        "runtime.onMessageExternal",
+        "tabs.onRemoved",
+        "alarms.onAlarm"
+      ]
+    },
+    "ssoIntermediateNavigation": {
+      "tolerated": true,
+      "validationPoint": "final-external-callback-only"
+    },
+    "externalCallbackIngress": {
+      "owner": "background-only-adapter-port",
+      "exposedToUiFacade": false,
+      "messageType": "q1travel.extensionAuth.callback.v1",
+      "validation": [
+        "exact-sender-origin",
+        "exact-callback-path",
+        "exact-auth-tab-id",
+        "constant-time-state",
+        "exact-transaction-phase-and-lifetime"
+      ],
+      "responseErrors": [
+        "callbackRejected",
+        "connectionFailed"
+      ]
+    },
+    "completionFocus": {
+      "sourceTabActivation": "only-when-auth-tab-active-and-window-focused",
+      "unrelatedWindowFocusAllowed": false,
+      "closeOnlyExactAuthTab": true
+    },
+    "webCallbackPrerequisites": {
+      "releaseBlocking": true,
+      "standaloneShell": true,
+      "clearQueryAndFragmentBeforeAsyncWork": true,
+      "responseHeaders": {
+        "referrerPolicy": "no-referrer",
+        "cacheControl": "no-store",
+        "xContentTypeOptions": "nosniff",
+        "contentSecurityPolicy": "default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; connect-src 'none'; img-src 'none'; font-src 'none'; object-src 'none'"
+      },
+      "accessLogQueryRedactionRequired": true
+    }
+  },
+  "environmentBinding": {
+    "crossBoundFields": [
+      "allowedOperationIds",
+      "apiOrigin",
+      "callbackOrigin",
+      "callbackPath",
+      "clientId",
+      "developmentOnly",
+      "expectedExtensionId",
+      "hostPermissions",
+      "manifestKey",
+      "permissionIds",
+      "profileId",
+      "storagePartition",
+      "webOrigin"
+    ],
+    "buildGateOnlyFields": [
+      "allowedOperationIds",
+      "callbackPath",
+      "clientId",
+      "expectedExtensionId",
+      "permissionIds"
+    ],
+    "rules": [
+      {
+        "field": "developmentOnly",
+        "appliesTo": "both",
+        "rule": "True exactly when `environment` is \"development\"; it is the explicit DEV marker."
+      },
+      {
+        "field": "apiOrigin",
+        "appliesTo": "development",
+        "rule": "A loopback origin: http(s)://127.0.0.1, localhost or [::1], with an optional port."
+      },
+      {
+        "field": "apiOrigin",
+        "appliesTo": "production",
+        "rule": "An HTTPS origin that is never loopback."
+      },
+      {
+        "field": "webOrigin",
+        "appliesTo": "development",
+        "rule": "A loopback origin, under the same rule as `apiOrigin`."
+      },
+      {
+        "field": "webOrigin",
+        "appliesTo": "production",
+        "rule": "An HTTPS origin that is never loopback."
+      },
+      {
+        "field": "manifestKey",
+        "appliesTo": "development",
+        "rule": "The unpacked key, which pins the fixed development Extension ID."
+      },
+      {
+        "field": "manifestKey",
+        "appliesTo": "production",
+        "rule": "Null: shipping an unpacked key would give the store build a development identity."
+      },
+      {
+        "field": "hostPermissions",
+        "appliesTo": "development",
+        "rule": "Non-empty and loopback-only."
+      },
+      {
+        "field": "hostPermissions",
+        "appliesTo": "production",
+        "rule": "Non-empty and never loopback."
+      },
+      {
+        "field": "callbackOrigin",
+        "appliesTo": "both",
+        "rule": "Exactly the immutable Profile `webOrigin`; the callback path completes the exact server-registered Web redirect URI."
+      },
+      {
+        "field": "callbackPath",
+        "appliesTo": "both",
+        "rule": "An absolute path with no query and no fragment, so it matches the exact registered redirect URI."
+      },
+      {
+        "field": "permissionIds",
+        "appliesTo": "both",
+        "rule": "Non-empty: an empty set cannot express a usable Grant intent."
+      },
+      {
+        "field": "allowedOperationIds",
+        "appliesTo": "both",
+        "rule": "Non-empty: a build that may dispatch nothing is a configuration error."
+      },
+      {
+        "field": "profileId",
+        "appliesTo": "both",
+        "rule": "Contains its own `environment` name, so a reused Profile is visible at build time."
+      },
+      {
+        "field": "storagePartition",
+        "appliesTo": "both",
+        "rule": "Contains its own `environment` name, so the two environments cannot share stored state."
+      }
+    ],
+    "runtimeCompositionAllowed": false,
+    "productionMayCarryManifestKey": false,
+    "productionMayCarryLoopbackHostPermission": false,
+    "sharedProfileAcrossEnvironments": false,
+    "failureCode": "configuration_invalid"
+  },
+  "mustExtractCore": {
+    "advisory": false,
+    "trigger": "The first non-Chrome JavaScript client is approved to start production code.",
+    "nonTriggeringEvents": [
+      "adr-accepted",
+      "design-authored",
+      "backlog-filed"
+    ],
+    "blockingEvents": [
+      "second-js-platform-production-code",
+      "core-source-copied",
+      "parallel-protocol-implementation"
+    ],
+    "requiredSteps": [
+      "publish-platform-agnostic-core",
+      "repoint-chrome-package-to-exact-core-dependency",
+      "build-new-platform-adapter-package",
+      "run-shared-protocol-conformance-on-both-platforms"
+    ],
+    "forbiddenCorePatterns": [
+      {
+        "id": "chrome-api-dependency",
+        "pattern": "\\bchrome\\.\\w+",
+        "flags": "g",
+        "reason": "Core is platform-agnostic; every Chrome API belongs to the chrome-adapter layer."
+      },
+      {
+        "id": "dom-dependency",
+        "pattern": "\\b(document|window|navigator|localStorage|HTMLElement)\\b",
+        "flags": "g",
+        "reason": "Core runs where no DOM exists and must not reach for one."
+      },
+      {
+        "id": "react-dependency",
+        "pattern": "from\\s*['\"`]react(-dom)?['\"`]|\\buse(State|Effect|Memo|Callback)\\b",
+        "flags": "g",
+        "reason": "Core carries no UI framework; rendering belongs to the consumer."
+      },
+      {
+        "id": "node-api-dependency",
+        "pattern": "from\\s*['\"`]node:|require\\(\\s*['\"`](fs|path|crypto|os|child_process)['\"`]",
+        "flags": "g",
+        "reason": "Core targets the browser runtime; Node.js built-ins would break the shared conformance."
+      },
+      {
+        "id": "consumer-business-import",
+        "pattern": "from\\s*['\"`][^'\"`]*(ozon|aliexpress|price-index)[^'\"`]*['\"`]",
+        "flags": "gi",
+        "reason": "Core must not know any consumer product; business scope stays in the consumer adapter."
+      }
+    ]
+  },
+  "errors": [
+    {
+      "code": "configuration_invalid",
+      "retry": "never",
+      "changesGrantState": false,
+      "interpretation": "A build or programming error that no runtime retry can repair."
+    },
+    {
+      "code": "runtime_not_ready",
+      "retry": "safe",
+      "changesGrantState": false,
+      "interpretation": "The request was never sent; retry once the runtime is ready."
+    },
+    {
+      "code": "runtime_unavailable",
+      "retry": "safe",
+      "changesGrantState": false,
+      "interpretation": "The Background Runtime is unavailable and nothing was sent."
+    },
+    {
+      "code": "interaction_in_progress",
+      "retry": "never",
+      "changesGrantState": false,
+      "interpretation": "Never start a second interactive flow."
+    },
+    {
+      "code": "interaction_denied",
+      "retry": "explicit-user-action",
+      "changesGrantState": false,
+      "interpretation": "Only the User starting the flow again can recover."
+    },
+    {
+      "code": "callback_invalid",
+      "retry": "never",
+      "changesGrantState": false,
+      "interpretation": "The callback is untrusted; fail closed."
+    },
+    {
+      "code": "protocol_invalid",
+      "retry": "never",
+      "changesGrantState": false,
+      "interpretation": "The protocol response violates the frozen contract."
+    },
+    {
+      "code": "network_unavailable",
+      "retry": "computed",
+      "changesGrantState": false,
+      "interpretation": "Computed from the send phase and the Operation replay policy; never assume the request did not arrive."
+    },
+    {
+      "code": "grant_expired",
+      "retry": "explicit-user-action",
+      "changesGrantState": true,
+      "interpretation": "A new login is required."
+    },
+    {
+      "code": "grant_invalidated",
+      "retry": "explicit-user-action",
+      "changesGrantState": true,
+      "interpretation": "Local material is cleared and a new login is required."
+    },
+    {
+      "code": "grant_forbidden",
+      "retry": "never",
+      "changesGrantState": false,
+      "interpretation": "This one Operation is not authorized; it is not evidence of a revoked Grant."
+    },
+    {
+      "code": "revocation_pending",
+      "retry": "explicit-user-action",
+      "changesGrantState": false,
+      "interpretation": "Only an explicit revoke retry or a local logout is allowed while revocation is pending."
+    },
+    {
+      "code": "operation_not_allowed",
+      "retry": "never",
+      "changesGrantState": false,
+      "interpretation": "The caller, message or Operation is outside the static policy; the reason is not disclosed."
+    },
+    {
+      "code": "response_invalid",
+      "retry": "never",
+      "changesGrantState": false,
+      "interpretation": "A response that cannot be trusted is never replayed."
+    }
+  ],
+  "uiSurfaceScan": {
+    "forbiddenPatterns": [
+      {
+        "id": "bearer-access",
+        "pattern": "\\b(getAccessToken|accessToken|bearer)\\b",
+        "flags": "gi",
+        "reason": "The bearer never leaves the Background Runtime."
+      },
+      {
+        "id": "pkce-verifier-access",
+        "pattern": "\\b(pkceVerifier|codeVerifier|code_verifier)\\b",
+        "flags": "gi",
+        "reason": "The PKCE verifier is sealed callback material, not UI state."
+      },
+      {
+        "id": "raw-response-access",
+        "pattern": "\\b(rawResponse|\\.headers)\\b|:\\s*Response\\b",
+        "flags": "g",
+        "reason": "The UI receives decoded results only; a raw Response would turn the SDK into a bearer proxy."
+      },
+      {
+        "id": "sensitive-log",
+        "pattern": "console\\.\\w+\\([^)]*\\b(token|bearer|verifier|state|code)\\b",
+        "flags": "gi",
+        "reason": "Logs carry redacted classifications, never authorization material."
+      }
+    ]
+  },
+  "senderPolicy": {
+    "rules": [
+      {
+        "id": "sender-extension-id",
+        "rule": "`sender.id` equals the Profile `expectedExtensionId` exactly."
+      },
+      {
+        "id": "top-level-frame",
+        "rule": "`sender.frameId` is 0: a content frame or sub-frame is never a UI caller."
+      },
+      {
+        "id": "declared-ui-context",
+        "rule": "The claimed context has an entry path in `uiPolicy.entryPaths`."
+      },
+      {
+        "id": "exact-entry-path",
+        "rule": "`sender.url` equals `chrome-extension://` + extension ID + that entry path."
+      },
+      {
+        "id": "status-unrestricted",
+        "rule": "`status` is a pure local read every declared context may call."
+      },
+      {
+        "id": "management-callers",
+        "rule": "`login`, `focusAuthorization`, `logout` and `revoke` require a context in `managementCallers`."
+      },
+      {
+        "id": "registered-operation",
+        "rule": "An `operationId` absent from the static registry is rejected, never defaulted in."
+      },
+      {
+        "id": "operation-allowed-callers",
+        "rule": "The calling context is in that Operation's own `allowedCallers`."
+      }
+    ],
+    "trustedSource": "chrome-message-sender",
+    "payloadClaimsTrusted": false,
+    "failure": "operation_not_allowed",
+    "disclosesViolatedRule": false
+  },
+  "coldStart": {
+    "retryableOperation": "status",
+    "maxAttempts": 3,
+    "autoRepeatedOperations": [],
+    "exhaustedFailure": "runtime_unavailable"
+  },
+  "localCleanup": {
+    "outcomes": [
+      "complete",
+      "incomplete"
+    ],
+    "mayClearBusinessDiagnosticData": false
+  },
+  "redaction": {
+    "patterns": [
+      {
+        "id": "jwt-shaped-bearer",
+        "pattern": "\\beyJ[\\w-]+\\.[\\w-]+\\.[\\w-]+",
+        "flags": "g",
+        "reason": "A bearer must never appear in a message or a log line."
+      },
+      {
+        "id": "url",
+        "pattern": "\\bhttps?:\\/\\/\\S+",
+        "flags": "g",
+        "reason": "A callback URL carries the authorization code and state in its query."
+      },
+      {
+        "id": "keyed-authorization-material",
+        "pattern": "\\b(bearer|token|access_token|code|verifier|code_verifier|state)\\s*[=:]\\s*\\S+",
+        "flags": "gi",
+        "reason": "A keyed carrier of authorization material leaks the value itself."
+      }
+    ],
+    "callbackSecrets": [
+      "authorization-code",
+      "state",
+      "PKCE-verifier",
+      "full-callback-url"
+    ],
+    "forbiddenSurfaces": [
+      "web-storage",
+      "browser-history",
+      "logs",
+      "ui",
+      "dom",
+      "external-callback-response"
+    ],
+    "legalCarriers": {
+      "externalCallbackRequest": {
+        "owner": "background-only-external-callback-ingress",
+        "fields": [
+          "authorization-code",
+          "state"
+        ],
+        "requiredValidation": [
+          "exact-sender-origin",
+          "exact-callback-path",
+          "exact-auth-tab-id",
+          "constant-time-state",
+          "exact-transaction-phase-and-lifetime"
+        ],
+        "mayEcho": false
+      },
+      "sealedBackgroundSession": {
+        "owner": "background-runtime",
+        "storage": "chrome.storage.session",
+        "accessLevel": "TRUSTED_CONTEXTS",
+        "fields": [
+          "PKCE-verifier",
+          "state"
+        ],
+        "mayLeaveBackgroundRuntime": false
+      }
+    },
+    "placeholder": "[redacted]"
+  }
+}
