@@ -69,7 +69,7 @@ const walkFiles = (root: string, directory = root): string[] =>
       : [absolute.slice(root.length + 1).split('\\').join('/')]
   })
 
-describe('0.1.0 package candidate', () => {
+describe('0.1.1 package candidate', () => {
   it('builds, packs, extracts and executes one exact isolated candidate', () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'q1travel-auth-package-'))
     try {
@@ -90,7 +90,7 @@ describe('0.1.0 package candidate', () => {
       const [candidate] = JSON.parse(packOutput) as PackEntry[]
       expect({ name: candidate.name, version: candidate.version }).toEqual({
         name: '@q1travel/app-authorization-chrome-extension',
-        version: '0.1.0',
+        version: '0.1.1',
       })
 
       const tarball = join(temporaryRoot, candidate.filename)
@@ -192,7 +192,7 @@ describe('0.1.0 package candidate', () => {
         },
       )
       expect(productionExports).toBe(
-        '["createChromeAppAuthorizationRuntime","createChromeAppAuthorizationUiFacade","defineChromeAppAuthorizationOperations"]',
+        '["createChromeAppAuthorizationRuntime","createChromeAppAuthorizationUiFacade","defineChromeAppAuthorizationOperations","prepareAuthorization"]',
       )
       const extractedComposition = execFileSync(
         'node',

@@ -1,6 +1,7 @@
 export { createChromeAppAuthorizationRuntime } from './public-runtime/runtime.js'
 export { createChromeAppAuthorizationUiFacade } from './ui-facade/facade.js'
 export { defineChromeAppAuthorizationOperations } from './ui-facade/operationCatalog.js'
+export { prepareAuthorization } from './core/pkce.js'
 
 export type {
   AppAuthorizationFailure,
@@ -22,6 +23,11 @@ export type {
   UiMessageSender,
   UiRequestDispatcher,
 } from './public-runtime/runtime.js'
+export type {
+  AuthorizationPreparationProfile,
+  CoreCryptoPort,
+  PreparedAuthorization,
+} from './core/contracts.js'
 export type {
   BackgroundOnlyAuthorizationStatePort,
   BackgroundOnlyBeginAuthorizationResult,

@@ -29,3 +29,6 @@
   and forbidden contents.
 
 No registry artifact has been published, and no consumer adoption is claimed.
+# 0.1.1
+
+- Export the dependency-free `prepareAuthorization` PKCE helper and its profile types for consumers.
