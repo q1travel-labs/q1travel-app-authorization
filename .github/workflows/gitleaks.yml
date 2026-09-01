@@ -16,10 +16,11 @@ jobs:
           fetch-depth: 0
 
       - name: Install Gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
         run: |
-          LATEST_TAG=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-          VERSION="${LATEST_TAG#v}"
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/${LATEST_TAG}/gitleaks_${VERSION}_linux_x64.tar.gz" | sudo tar -xz -C /usr/local/bin gitleaks
+          curl -sSLf "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
 
       - name: Run Gitleaks
         run: |
