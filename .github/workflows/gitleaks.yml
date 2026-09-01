@@ -1,0 +1,30 @@
+name: gitleaks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          LATEST_TAG=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          VERSION="${LATEST_TAG#v}"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/${LATEST_TAG}/gitleaks_${VERSION}_linux_x64.tar.gz" | sudo tar -xz -C /usr/local/bin gitleaks
+
+      - name: Run Gitleaks
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gitleaks git --log-opts="origin/${{ github.base_ref }}..HEAD" --verbose --redact
+          else
+            gitleaks git --verbose --redact
+          fi
