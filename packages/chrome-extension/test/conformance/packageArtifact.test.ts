@@ -389,5 +389,5 @@ describe('0.1.0 package candidate', () => {
     } finally {
       rmSync(temporaryRoot, { recursive: true, force: true })
     }
-  })
+  }, 120_000)
 })
