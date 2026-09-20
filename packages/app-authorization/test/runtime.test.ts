@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthSession } from '../src/core/types.js'
 import { createAuthFacadeWithDependencies } from '../src/extension/facade.js'
-import { createAuthRuntime } from '../src/extension/index.js'
+import { createAuthRuntime } from '../src/extension/background.js'
 import { createAuthRuntimeWithDependencies } from '../src/extension/runtime.js'
 import {
   SESSION_STORAGE_KEY,
@@ -25,8 +25,16 @@ const config = {
 const token = 't'.repeat(43)
 
 describe('background auth runtime', () => {
-  it('deduplicates concurrent login and exchanges an exact form request', async () => {
+  it('restricts session storage to trusted extension contexts during initialization', () => {
     const { chrome, storage } = createChromePort()
+
+    createAuthRuntimeWithDependencies(config, { chrome, fetch: vi.fn() })
+
+    expect(storage.accessLevel).toBe('TRUSTED_CONTEXTS')
+  })
+
+  it('deduplicates concurrent login and exchanges an exact form request', async () => {
+    const { chrome } = createChromePort()
     let release!: (callback: string) => void
     const launcher = vi.fn<(authorizationUrl: string) => Promise<string>>(
       () => new Promise<string>((resolve) => { release = resolve }),
@@ -69,7 +77,6 @@ describe('background auth runtime', () => {
     })
     await expect(second).resolves.toEqual(await first)
     expect(fetch).toHaveBeenCalledOnce()
-    expect(storage.accessLevel).toBe('TRUSTED_CONTEXTS')
   })
 
   it('treats an expired stored token as signed out without sending a request', async () => {

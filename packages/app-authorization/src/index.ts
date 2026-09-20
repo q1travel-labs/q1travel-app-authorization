@@ -3,7 +3,7 @@ export {
   AuthErrorCode,
 } from './core/types.js'
 export type {
-  AuthConfig,
   AuthenticatedSession,
   AuthSession,
 } from './core/types.js'
+export type { AuthConfig } from './core/config.js'

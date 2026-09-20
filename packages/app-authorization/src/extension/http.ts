@@ -1,8 +1,8 @@
 import {
   AppAuthorizationError,
   AuthErrorCode,
-  type ResolvedAuthConfig,
 } from '../core/types.js'
+import type { ResolvedAuthConfig } from '../core/config.js'
 import type { StoredSession } from './storage.js'
 
 export type FetchPort = (

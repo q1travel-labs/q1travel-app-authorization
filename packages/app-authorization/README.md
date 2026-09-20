@@ -1,6 +1,6 @@
 # @q1travel/app-authorization
 
-Unified OAuth authorization-code runtime for Chrome extensions. Tokens stay in the background service worker and are never returned through the UI facade.
+Unified OAuth authorization-code runtime for Chrome extensions. Tokens never reach content scripts, web pages, or SDK UI messages. Extension-owned pages and the service worker share Chrome's trusted-context storage boundary.
 
 ## Install
 
@@ -17,7 +17,7 @@ pnpm add react @q1travel/app-authorization
 ## Background
 
 ```ts
-import { createAuthRuntime } from '@q1travel/app-authorization/extension'
+import { createAuthRuntime } from '@q1travel/app-authorization/extension/background'
 
 export const auth = createAuthRuntime({
   clientId: 'registered-extension-client',
@@ -39,7 +39,7 @@ try {
 ## Popup or extension page
 
 ```ts
-import { createAuthFacade } from '@q1travel/app-authorization/extension'
+import { createAuthFacade } from '@q1travel/app-authorization/extension/ui'
 
 const auth = createAuthFacade()
 let session
@@ -67,7 +67,7 @@ The facade exposes `login`, `logout`, `getSession`, `verifySession`, and `onSess
 
 ```tsx
 import { AuthGate } from '@q1travel/app-authorization/react'
-import { createAuthFacade } from '@q1travel/app-authorization/extension'
+import { createAuthFacade } from '@q1travel/app-authorization/extension/ui'
 
 const auth = createAuthFacade()
 
@@ -115,13 +115,16 @@ Errors never retain callback URLs, authorization codes, PKCE verifiers, or acces
 
 ## Security boundary
 
-- Access tokens exist only in background memory and `chrome.storage.session` configured for trusted contexts.
-- UI and content-script messages contain only session metadata and stable errors.
+- Access tokens exist in background memory and `chrome.storage.session`; runtime initialization explicitly sets `TRUSTED_CONTEXTS`.
+- Chrome exposes no service-worker-only session-storage access level. `TRUSTED_CONTEXTS` blocks content scripts and web pages, but extension-owned pages and the service worker remain one trust domain and can read session storage.
+- SDK UI messages contain only session metadata and stable errors; tokens never reach content scripts, web pages, or those messages.
 - Sessions expire locally after the server-issued fixed eight-hour lifetime; there is no refresh token or replay.
 - Authorization callback origin and path must exactly match `redirectUri`; `state` must match the active transaction.
 - `authorizedFetch` never accepts a cross-origin target or a caller-supplied `Authorization` header.
 - Applications keep business API message allowlists and authorization-dependent cleanup in their own background code.
 
+The SDK deliberately keeps the simple session-storage design. Wrapping the stored token with an in-memory one-time key would lose that key whenever Chrome restarts the service worker, forcing verification or login again while adding little protection inside the extension's existing trusted-page boundary.
+
 ## Upgrade from the former extension-specific package
 
-Replace the old package dependency and imports with `@q1travel/app-authorization/extension`. Remove tab-based authorization, external callback bridges, caller-supplied token exchange, UI fetch relays, and operation catalogs. Initialize one background runtime, use the facade in extension pages, and move business messages to the application's own typed background protocol.
+Replace the old package dependency and imports with `@q1travel/app-authorization/extension/background` in the service worker and `@q1travel/app-authorization/extension/ui` in extension pages. Remove tab-based authorization, external callback bridges, caller-supplied token exchange, UI fetch relays, and operation catalogs. Initialize one background runtime, use the facade in extension pages, and move business messages to the application's own typed background protocol.

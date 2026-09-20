@@ -12,7 +12,7 @@ import {
   AppAuthorizationError,
   AuthErrorCode,
   type AuthSession,
-} from '../core/types.js'
+} from '../extension/ui.js'
 
 export interface AuthClient {
   verifySession(): Promise<AuthSession>

@@ -5,12 +5,14 @@ import {
   type CryptoPort,
 } from '../core/pkce.js'
 import {
-  AppAuthorizationError,
-  AuthErrorCode,
   resolveAuthConfig,
   type AuthConfig,
-  type AuthSession,
   type ResolvedAuthConfig,
+} from '../core/config.js'
+import {
+  AppAuthorizationError,
+  AuthErrorCode,
+  type AuthSession,
 } from '../core/types.js'
 import {
   exchangeAuthorizationCode,
