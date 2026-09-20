@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { validateAuthorizationCallback } from '../src/core/callback.js'
 import { createAuthorizationRequest } from '../src/core/pkce.js'
+import { resolveAuthConfig } from '../src/core/types.js'
 
 const bytes = Uint8Array.from({ length: 32 }, (_, index) => index)
 const cryptoPort = {
@@ -9,6 +10,37 @@ const cryptoPort = {
   sha256: async (value: Uint8Array) =>
     Uint8Array.from(createHash('sha256').update(value).digest()),
 }
+
+const authConfig = {
+  clientId: 'extension-client',
+  redirectUri: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/callback',
+  scopes: ['orders:read'],
+  apiOrigin: 'http://127.0.0.1:3011',
+  allowInsecureLoopback: true,
+} as const
+
+describe('authorization configuration', () => {
+  it.each(['', '/'])('normalizes root pathPrefix %j to unprefixed endpoints', (pathPrefix) => {
+    expect(resolveAuthConfig({ ...authConfig, pathPrefix })).toMatchObject({
+      authorizeUrl: 'http://127.0.0.1:3011/app-authorizations/v1/authorize',
+      tokenUrl: 'http://127.0.0.1:3011/app-authorizations/v1/token',
+      revokeUrl: 'http://127.0.0.1:3011/app-authorizations/v1/revoke',
+      sessionUrl: 'http://127.0.0.1:3011/app-authorizations/v1/session',
+    })
+  })
+
+  it.each([
+    'api',
+    '/api/',
+    '/api/../admin',
+    '/api?debug=true',
+    '/api#debug',
+  ])('still rejects unsafe pathPrefix %j', (pathPrefix) => {
+    expect(() => resolveAuthConfig({ ...authConfig, pathPrefix })).toThrowError(
+      expect.objectContaining({ code: 'configuration_invalid' }),
+    )
+  })
+})
 
 describe('PKCE authorization request', () => {
   it('uses a 43-character URL-safe verifier and an S256 challenge', async () => {

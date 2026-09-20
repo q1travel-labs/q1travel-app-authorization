@@ -16,16 +16,20 @@ concurrency:
 
 jobs:
   verify:
-    name: Typecheck, test, build, and package
+    name: Typecheck, test, build, and package (Node ${{ matrix.node }})
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.23.1', '24.5.0']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 24.5.0
+          node-version: ${{ matrix.node }}
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck

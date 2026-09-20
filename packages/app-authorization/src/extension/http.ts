@@ -124,11 +124,13 @@ export const verifyRemoteSession = async (
   fetch: FetchPort,
   config: ResolvedAuthConfig,
   token: string,
+  signal?: AbortSignal,
 ): Promise<{ expiresAt: string; scopes: readonly string[] }> => {
   const response = await request(fetch, config.sessionUrl, {
     method: 'GET',
     credentials: 'omit',
     headers: { authorization: `Bearer ${token}` },
+    signal,
   })
   if (!response.ok) await oauthFailure(response)
   const value = await readJson(response)

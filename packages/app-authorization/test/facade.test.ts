@@ -120,6 +120,7 @@ describe('extension UI facade', () => {
   it('accepts requests from an extension options page opened in a tab', async () => {
     const { chrome, listeners } = createChromePort()
     const runtime = {
+      ready: vi.fn(async () => undefined),
       login: vi.fn(async () => ({ status: 'signed-out' as const })),
       logout: vi.fn(async () => ({ status: 'signed-out' as const })),
       getSession: vi.fn(async () => ({ status: 'signed-out' as const })),

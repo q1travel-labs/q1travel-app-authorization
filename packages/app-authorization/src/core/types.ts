@@ -146,10 +146,15 @@ export const resolveAuthConfig = (config: AuthConfig): ResolvedAuthConfig => {
     invalidConfiguration()
   }
   const pathPrefix = config.pathPrefix ?? '/api'
-  if (!PATH_PREFIX_PATTERN.test(pathPrefix) || pathPrefix.endsWith('/')) {
+  if (
+    (pathPrefix !== '' && !PATH_PREFIX_PATTERN.test(pathPrefix)) ||
+    pathPrefix.includes('..') ||
+    (pathPrefix.length > 1 && pathPrefix.endsWith('/'))
+  ) {
     invalidConfiguration()
   }
-  const base = `${api.origin}${pathPrefix}/app-authorizations/v1`
+  const normalizedPathPrefix = pathPrefix === '/' ? '' : pathPrefix
+  const base = `${api.origin}${normalizedPathPrefix}/app-authorizations/v1`
   return Object.freeze({
     clientId: config.clientId,
     redirectUri: config.redirectUri,
