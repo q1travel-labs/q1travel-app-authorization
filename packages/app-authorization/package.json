@@ -1,6 +1,6 @@
 {
   "name": "@q1travel/app-authorization",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Unified authorization runtime for browser extensions",
   "repository": {
     "type": "git",
