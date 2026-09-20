@@ -22,6 +22,7 @@ import type { AuthFlowLauncher, ChromePort } from './ports.js'
 import { SessionRepository, type StoredSession } from './storage.js'
 
 export interface AuthRuntime {
+  ready(): Promise<void>
   login(): Promise<AuthSession>
   logout(): Promise<AuthSession>
   getSession(): Promise<AuthSession>
@@ -39,7 +40,10 @@ export interface AuthRuntimeDependencies extends AuthRuntimeOptions {
   readonly fetch: FetchPort
   readonly crypto?: CryptoPort
   readonly now?: () => number
+  readonly verifyOnStartup?: boolean
 }
+
+const STARTUP_VERIFICATION_TIMEOUT_MS = 10_000
 
 const getChrome = (): ChromePort => {
   const value = (globalThis as typeof globalThis & { chrome?: ChromePort }).chrome
@@ -80,6 +84,7 @@ export const createAuthRuntime = (
   chrome: getChrome(),
   fetch: globalThis.fetch.bind(globalThis),
   ...options,
+  verifyOnStartup: true,
 })
 
 export const createAuthRuntimeWithDependencies = (
@@ -111,6 +116,8 @@ export const createAuthRuntimeWithDependencies = (
   let loginInFlight: Promise<AuthSession> | null = null
   let sessionGeneration = 0
   let latestLogin: { readonly generation: number; readonly stored: StoredSession } | null = null
+  let startupVerification: Promise<AuthSession> | null = null
+  let startupVerificationSettled = true
 
   const publish = (session: AuthSession) => {
     for (const subscriber of subscribers) {
@@ -222,7 +229,106 @@ export const createAuthRuntimeWithDependencies = (
     return tracked
   }
 
+  const verifySession = async (
+    shouldCommit: () => boolean = () => true,
+    signal?: AbortSignal,
+  ): Promise<AuthSession> => {
+    const expectedGeneration = sessionGeneration
+    const { stored, session } = await current()
+    if (!stored) return session
+    if (sessionGeneration !== expectedGeneration) return (await current()).session
+    try {
+      const verified = await verifyRemoteSession(fetch, config, stored.accessToken, signal)
+      if (!shouldCommit()) return (await current()).session
+      const expiresAt = new Date(
+        Math.min(Date.parse(stored.expiresAt), Date.parse(verified.expiresAt)),
+      ).toISOString()
+      const updated = { ...stored, expiresAt, scopes: [...verified.scopes] }
+      const metadataChanged =
+        updated.expiresAt !== stored.expiresAt ||
+        updated.scopes.length !== stored.scopes.length ||
+        updated.scopes.some((scope, index) => scope !== stored.scopes[index])
+      const result = await mutateSession(async () => {
+        const latest = await repository.read()
+        if (
+          !shouldCommit() ||
+          sessionGeneration !== expectedGeneration ||
+          latest?.accessToken !== stored.accessToken
+        ) {
+          return {
+            session: latest ? asPublicSession(latest) : { status: 'signed-out' } as const,
+            cleared: false,
+            changed: false,
+          }
+        }
+        if (Date.parse(expiresAt) <= now()) {
+          await repository.clearSession()
+          if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
+          return {
+            session: { status: 'signed-out' } as const,
+            cleared: true,
+            changed: false,
+          }
+        }
+        await repository.write(updated)
+        if (latestLogin?.stored.accessToken === stored.accessToken) {
+          latestLogin = { ...latestLogin, stored: updated }
+        }
+        if (!shouldCommit() || sessionGeneration !== expectedGeneration) {
+          await repository.clearSession()
+          if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
+          return {
+            session: { status: 'signed-out' } as const,
+            cleared: true,
+            changed: false,
+          }
+        }
+        return {
+          session: asPublicSession(updated),
+          cleared: false,
+          changed: metadataChanged,
+        }
+      })
+      if (result.cleared || result.changed) publish(result.session)
+      return result.session
+    } catch (error) {
+      if (
+        error instanceof AppAuthorizationError &&
+        error.code === AuthErrorCode.invalidToken
+      ) {
+        if (!shouldCommit()) return (await current()).session
+        const result = await mutateSession(async () => {
+          const latest = await repository.read()
+          if (
+            !shouldCommit() ||
+            sessionGeneration !== expectedGeneration ||
+            latest?.accessToken !== stored.accessToken
+          ) {
+            return {
+              session: latest ? asPublicSession(latest) : { status: 'signed-out' } as const,
+              cleared: false,
+            }
+          }
+          await repository.clearSession()
+          if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
+          return { session: { status: 'signed-out' } as const, cleared: true }
+        })
+        if (result.cleared) publish(result.session)
+        return result.session
+      }
+      throw error
+    }
+  }
+
+  const waitForStartupVerification = async (): Promise<void> => {
+    if (startupVerification) await startupVerification.catch(() => undefined)
+  }
+
   const runtime: AuthRuntime = {
+    async ready() {
+      await startupReady
+      if (startupVerification) await startupVerification.then(() => undefined)
+    },
     login,
     async logout() {
       const expectedGeneration = ++sessionGeneration
@@ -260,90 +366,12 @@ export const createAuthRuntimeWithDependencies = (
       return cleanup.session
     },
     async getSession() {
+      await waitForStartupVerification()
       return (await current()).session
     },
     async verifySession() {
-      const expectedGeneration = sessionGeneration
-      const { stored, session } = await current()
-      if (!stored) return session
-      if (sessionGeneration !== expectedGeneration) return (await current()).session
-      try {
-        const verified = await verifyRemoteSession(fetch, config, stored.accessToken)
-        const expiresAt = new Date(
-          Math.min(Date.parse(stored.expiresAt), Date.parse(verified.expiresAt)),
-        ).toISOString()
-        const updated = { ...stored, expiresAt, scopes: [...verified.scopes] }
-        const metadataChanged =
-          updated.expiresAt !== stored.expiresAt ||
-          updated.scopes.length !== stored.scopes.length ||
-          updated.scopes.some((scope, index) => scope !== stored.scopes[index])
-        const result = await mutateSession(async () => {
-          const latest = await repository.read()
-          if (
-            sessionGeneration !== expectedGeneration ||
-            latest?.accessToken !== stored.accessToken
-          ) {
-            return {
-              session: latest ? asPublicSession(latest) : { status: 'signed-out' } as const,
-              cleared: false,
-              changed: false,
-            }
-          }
-          if (Date.parse(expiresAt) <= now()) {
-            await repository.clearSession()
-            if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
-            return {
-              session: { status: 'signed-out' } as const,
-              cleared: true,
-              changed: false,
-            }
-          }
-          await repository.write(updated)
-          if (latestLogin?.stored.accessToken === stored.accessToken) {
-            latestLogin = { ...latestLogin, stored: updated }
-          }
-          if (sessionGeneration !== expectedGeneration) {
-            await repository.clearSession()
-            if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
-            return {
-              session: { status: 'signed-out' } as const,
-              cleared: true,
-              changed: false,
-            }
-          }
-          return {
-            session: asPublicSession(updated),
-            cleared: false,
-            changed: metadataChanged,
-          }
-        })
-        if (result.cleared || result.changed) publish(result.session)
-        return result.session
-      } catch (error) {
-        if (
-          error instanceof AppAuthorizationError &&
-          error.code === AuthErrorCode.invalidToken
-        ) {
-          const result = await mutateSession(async () => {
-            const latest = await repository.read()
-            if (
-              sessionGeneration !== expectedGeneration ||
-              latest?.accessToken !== stored.accessToken
-            ) {
-              return {
-                session: latest ? asPublicSession(latest) : { status: 'signed-out' } as const,
-                cleared: false,
-              }
-            }
-            await repository.clearSession()
-            if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
-            return { session: { status: 'signed-out' } as const, cleared: true }
-          })
-          if (result.cleared) publish(result.session)
-          return result.session
-        }
-        throw error
-      }
+      if (startupVerification && !startupVerificationSettled) return startupVerification
+      return verifySession()
     },
     onSessionChange(callback) {
       subscribers.add(callback)
@@ -376,6 +404,7 @@ export const createAuthRuntimeWithDependencies = (
       if (headers.has('authorization')) {
         throw new AppAuthorizationError(AuthErrorCode.requestNotAllowed)
       }
+      await waitForStartupVerification()
       const { stored } = await current()
       if (!stored) throw new AppAuthorizationError(AuthErrorCode.sessionExpired)
       headers.set('authorization', `Bearer ${stored.accessToken}`)
@@ -415,5 +444,27 @@ export const createAuthRuntimeWithDependencies = (
       return response
     },
   }
+
+  if (options.verifyOnStartup) {
+    let acceptResult = true
+    const controller = new AbortController()
+    startupVerificationSettled = false
+    const verification = verifySession(() => acceptResult, controller.signal)
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        acceptResult = false
+        controller.abort()
+        reject(new AppAuthorizationError(AuthErrorCode.networkUnavailable))
+      }, STARTUP_VERIFICATION_TIMEOUT_MS)
+    })
+    startupVerification = Promise.race([verification, timedOut]).finally(() => {
+      acceptResult = false
+      startupVerificationSettled = true
+      if (timeout !== undefined) clearTimeout(timeout)
+    })
+    void startupVerification.catch(() => undefined)
+  }
+
   return Object.freeze(runtime)
 }

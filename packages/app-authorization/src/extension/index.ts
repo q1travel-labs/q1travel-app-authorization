@@ -20,6 +20,5 @@ export const createAuthRuntime = (
     createRuntime(config, options),
     (globalThis as typeof globalThis & { chrome?: AuthRuntimeDependencies['chrome'] }).chrome,
   )
-  void runtime.verifySession().catch(() => undefined)
   return runtime
 }

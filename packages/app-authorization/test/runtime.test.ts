@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthSession } from '../src/core/types.js'
+import { createAuthFacadeWithDependencies } from '../src/extension/facade.js'
 import { createAuthRuntime } from '../src/extension/index.js'
 import { createAuthRuntimeWithDependencies } from '../src/extension/runtime.js'
 import {
@@ -224,6 +225,108 @@ describe('background auth runtime', () => {
       createAuthRuntime(config)
       await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
     } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('blocks background, authorized fetch, and UI reads until startup revocation settles', async () => {
+    const { chrome, storage } = createChromePort()
+    storage.values[SESSION_STORAGE_KEY] = {
+      accessToken: token,
+      tokenType: 'Bearer',
+      expiresAt: '2099-01-02T00:00:00.000Z',
+      scopes: ['orders:read'],
+    }
+    let resolveVerification!: (response: Response) => void
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).endsWith('/session')) {
+        return new Promise<Response>((resolve) => { resolveVerification = resolve })
+      }
+      return Promise.resolve(new Response(null, { status: 200 }))
+    })
+    vi.stubGlobal('chrome', chrome)
+    vi.stubGlobal('fetch', fetch)
+    try {
+      const runtime = createAuthRuntime(config)
+      const facade = createAuthFacadeWithDependencies({ chrome })
+      const backgroundRead = runtime.getSession()
+      const uiRead = facade.getSession()
+      const authorizedRequest = runtime.authorizedFetch('https://api.example.com/orders')
+      const settled = vi.fn()
+      void backgroundRead.then(settled, settled)
+      void uiRead.then(settled, settled)
+      void authorizedRequest.then(settled, settled)
+
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+      await Promise.resolve()
+      expect(settled).not.toHaveBeenCalled()
+
+      resolveVerification(jsonResponse({
+        error: 'invalid_token',
+        error_description: 'Access token is invalid or expired.',
+      }, 401))
+
+      await expect(runtime.ready()).resolves.toBeUndefined()
+      await expect(backgroundRead).resolves.toEqual({ status: 'signed-out' })
+      await expect(uiRead).resolves.toEqual({ status: 'signed-out' })
+      await expect(authorizedRequest).rejects.toMatchObject({ code: 'session_expired' })
+      expect(fetch).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('settles startup after a network failure and preserves an unexpired local session', async () => {
+    const { chrome, storage } = createChromePort()
+    storage.values[SESSION_STORAGE_KEY] = {
+      accessToken: token,
+      tokenType: 'Bearer',
+      expiresAt: '2099-01-02T00:00:00.000Z',
+      scopes: ['orders:read'],
+    }
+    vi.stubGlobal('chrome', chrome)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('offline') }))
+    try {
+      const runtime = createAuthRuntime(config)
+
+      await expect(runtime.ready()).rejects.toMatchObject({
+        code: 'network_unavailable',
+        retryable: true,
+      })
+      await expect(runtime.getSession()).resolves.toEqual({
+        status: 'authenticated',
+        expiresAt: '2099-01-02T00:00:00.000Z',
+        scopes: ['orders:read'],
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('times out startup verification and then preserves an unexpired local session', async () => {
+    vi.useFakeTimers()
+    const { chrome, storage } = createChromePort()
+    storage.values[SESSION_STORAGE_KEY] = {
+      accessToken: token,
+      tokenType: 'Bearer',
+      expiresAt: '2099-01-02T00:00:00.000Z',
+      scopes: ['orders:read'],
+    }
+    vi.stubGlobal('chrome', chrome)
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
+    try {
+      const runtime = createAuthRuntime(config)
+      const readiness = expect(runtime.ready()).rejects.toMatchObject({
+        code: 'network_unavailable',
+      })
+      const session = runtime.getSession()
+
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      await readiness
+      await expect(session).resolves.toMatchObject({ status: 'authenticated' })
+    } finally {
+      vi.useRealTimers()
       vi.unstubAllGlobals()
     }
   })

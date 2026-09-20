@@ -27,9 +27,14 @@ export const auth = createAuthRuntime({
   pathPrefix: '/api',
 })
 
+try {
+  await auth.ready()
+} catch {
+  // The local session can still be used; show that remote verification is unavailable.
+}
 ```
 
-`createAuthRuntime(config)` installs the background runtime and its strict UI message listener, then verifies any restored session once for that service-worker instance.
+`createAuthRuntime(config)` installs the background runtime and its strict UI message listener, then verifies any restored session once for that service-worker instance. `ready()` observes that first verification: it rejects with a retryable error on network failure or after 10 seconds. `getSession()`, `authorizedFetch()`, and facade session reads automatically wait for the first verification to settle, so callers cannot accidentally bypass it. After a network failure or timeout, a locally unexpired session remains available; use the `ready()` error to show that remote verification is temporarily unavailable.
 
 ## Popup or extension page
 
@@ -37,7 +42,13 @@ export const auth = createAuthRuntime({
 import { createAuthFacade } from '@q1travel/app-authorization/extension'
 
 const auth = createAuthFacade()
-const session = await auth.verifySession()
+let session
+try {
+  session = await auth.verifySession()
+} catch {
+  session = await auth.getSession()
+  // Keep a locally unexpired session and show that remote verification is unavailable.
+}
 
 if (session.status === 'signed-out') {
   await auth.login()
@@ -50,7 +61,7 @@ const unsubscribe = auth.onSessionChange((next) => {
 window.addEventListener('unload', unsubscribe, { once: true })
 ```
 
-The facade exposes `login`, `logout`, `getSession`, `verifySession`, and `onSessionChange`. It does not expose `authorizedFetch` or any credential-bearing type.
+The facade exposes `login`, `logout`, `getSession`, `verifySession`, and `onSessionChange`. An immediate `verifySession()` shares the startup verification and exposes its retryable failure; `getSession()` waits for that attempt to settle, then falls back to locally unexpired state. The facade does not expose `authorizedFetch` or any credential-bearing type.
 
 ## React gate
 
@@ -79,14 +90,15 @@ export function Root() {
 | `redirectUri` | yes | Exact `https://<extension-id>.chromiumapp.org/<path>` callback. |
 | `scopes` | yes | Non-empty unique scope identifiers. |
 | `apiOrigin` | yes | Exact API origin allowed by `authorizedFetch`. |
-| `pathPrefix` | no | API route prefix; defaults to `/api`. |
+| `pathPrefix` | no | API route prefix; defaults to `/api`. Use `''` or `'/'` for no prefix. |
 | `allowInsecureLoopback` | no | Allows explicit HTTP loopback origins for local tests only. |
 
-The fixed authorization endpoints are `<apiOrigin><pathPrefix>/app-authorizations/v1/{authorize,token,revoke,session}`. Invalid or incomplete configuration fails closed.
+The fixed authorization endpoints are `<apiOrigin><pathPrefix>/app-authorizations/v1/{authorize,token,revoke,session}`. Empty and root prefixes both normalize to `<apiOrigin>/app-authorizations/v1/*`; other prefixes must start with `/`, cannot contain `..`, a query, or a fragment, and cannot end in `/`. Invalid or incomplete configuration fails closed.
 
 ## Background API
 
 - `login()` launches `chrome.identity.launchWebAuthFlow`, validates the exact callback and exchanges one authorization code with PKCE S256.
+- `ready()` waits for the one-time restored-session verification and exposes retryable startup failures.
 - `logout()` attempts remote revocation and always clears local state. It throws `revocation_unconfirmed` when the remote result is unknown.
 - `getSession()` returns only status, expiry, and scopes.
 - `verifySession()` checks the server session and clears revoked credentials.
