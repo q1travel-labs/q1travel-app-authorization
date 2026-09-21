@@ -9,16 +9,18 @@ const expected = new Set([
   'README.md',
   'dist/core/callback.d.ts',
   'dist/core/callback.js',
+  'dist/core/config.d.ts',
+  'dist/core/config.js',
   'dist/core/pkce.d.ts',
   'dist/core/pkce.js',
   'dist/core/types.d.ts',
   'dist/core/types.js',
+  'dist/extension/background.d.ts',
+  'dist/extension/background.js',
   'dist/extension/facade.d.ts',
   'dist/extension/facade.js',
   'dist/extension/http.d.ts',
   'dist/extension/http.js',
-  'dist/extension/index.d.ts',
-  'dist/extension/index.js',
   'dist/extension/listener.d.ts',
   'dist/extension/listener.js',
   'dist/extension/ports.d.ts',
@@ -31,6 +33,8 @@ const expected = new Set([
   'dist/extension/sender.js',
   'dist/extension/storage.d.ts',
   'dist/extension/storage.js',
+  'dist/extension/ui.d.ts',
+  'dist/extension/ui.js',
   'dist/index.d.ts',
   'dist/index.js',
   'dist/react/index.d.ts',
@@ -71,13 +75,16 @@ if (tarball) {
   try {
     execFileSync('tar', ['-xzf', resolve(tarball), '-C', directory])
     const root = await import(pathToFileURL(join(directory, 'package/dist/index.js')).href)
-    const extension = await import(
-      pathToFileURL(join(directory, 'package/dist/extension/index.js')).href
+    const background = await import(
+      pathToFileURL(join(directory, 'package/dist/extension/background.js')).href
+    )
+    const ui = await import(
+      pathToFileURL(join(directory, 'package/dist/extension/ui.js')).href
     )
     if (
       typeof root.AppAuthorizationError !== 'function' ||
-      typeof extension.createAuthRuntime !== 'function' ||
-      typeof extension.createAuthFacade !== 'function'
+      typeof background.createAuthRuntime !== 'function' ||
+      typeof ui.createAuthFacade !== 'function'
     ) {
       throw new Error('Published entry points do not expose the required API.')
     }

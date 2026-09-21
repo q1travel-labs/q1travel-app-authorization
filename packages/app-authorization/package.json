@@ -18,9 +18,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./extension": {
-      "types": "./dist/extension/index.d.ts",
-      "import": "./dist/extension/index.js"
+    "./extension/background": {
+      "types": "./dist/extension/background.d.ts",
+      "import": "./dist/extension/background.js"
+    },
+    "./extension/ui": {
+      "types": "./dist/extension/ui.d.ts",
+      "import": "./dist/extension/ui.js"
     },
     "./react": {
       "types": "./dist/react/index.d.ts",

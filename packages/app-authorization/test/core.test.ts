@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { validateAuthorizationCallback } from '../src/core/callback.js'
 import { createAuthorizationRequest } from '../src/core/pkce.js'
-import { resolveAuthConfig } from '../src/core/types.js'
+import { resolveAuthConfig } from '../src/core/config.js'
 
 const bytes = Uint8Array.from({ length: 32 }, (_, index) => index)
 const cryptoPort = {

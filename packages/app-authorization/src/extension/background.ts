@@ -1,9 +1,7 @@
-export { createAuthFacade } from './facade.js'
-export type { AuthFacade } from './facade.js'
-export type { AuthRuntime, AuthRuntimeOptions } from './runtime.js'
 export type { AuthFlowLauncher } from './ports.js'
+export type { AuthRuntime, AuthRuntimeOptions } from './runtime.js'
 
-import type { AuthConfig } from '../core/types.js'
+import type { AuthConfig } from '../core/config.js'
 import {
   createAuthRuntime as createRuntime,
   type AuthRuntime,
