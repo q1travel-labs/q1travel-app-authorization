@@ -1,0 +1,59 @@
+name: Release npm package
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, verify, and publish with provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26.5.0
+      - run: corepack enable
+      - run: npm install --global npm@12.0.1 --no-audit --no-fund
+      - run: pnpm install --frozen-lockfile
+      - name: Require public source for provenance
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: test "$REPOSITORY_VISIBILITY" = public
+      - name: Verify tag and package version
+        working-directory: packages/app-authorization
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: test "$RELEASE_TAG" = "v$(node -p "require('./package.json').version")"
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm check:pack
+      - name: Build release tarball
+        id: pack
+        working-directory: packages/app-authorization
+        run: |
+          tarball="$(npm pack --json | node -e "let data='';process.stdin.on('data',chunk=>data+=chunk).on('end',()=>process.stdout.write(JSON.parse(data)[0].filename))")"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+      - name: Verify release tarball
+        working-directory: packages/app-authorization
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: node scripts/check-package.mjs "$TARBALL"
+      - name: Publish through npm trusted publishing
+        working-directory: packages/app-authorization
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "$TARBALL" --access public --provenance
