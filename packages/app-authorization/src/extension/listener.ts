@@ -1,12 +1,12 @@
 import type { AuthSession } from '../core/types.js'
-import type { ChromePort } from './ports.js'
+import type { AuthRuntimeChromePort } from './ports.js'
 import { AUTH_PROTOCOL, SESSION_CHANGED, parseRequest, serializeError } from './protocol.js'
 import type { AuthRuntime } from './runtime.js'
 import { isTrustedExtensionSender } from './sender.js'
 
 export const installRuntime = (
   runtime: AuthRuntime,
-  chrome: ChromePort | undefined,
+  chrome: AuthRuntimeChromePort | undefined,
 ): AuthRuntime => {
   if (!chrome) throw new TypeError('Chrome runtime is unavailable.')
   runtime.onSessionChange((session: AuthSession) => {

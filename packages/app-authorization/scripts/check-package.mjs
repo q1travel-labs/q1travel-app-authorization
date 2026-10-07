@@ -33,6 +33,10 @@ const expected = new Set([
   'dist/extension/sender.js',
   'dist/extension/storage.d.ts',
   'dist/extension/storage.js',
+  'dist/extension/tabAuthPorts.d.ts',
+  'dist/extension/tabAuthPorts.js',
+  'dist/extension/tabAuthRuntime.d.ts',
+  'dist/extension/tabAuthRuntime.js',
   'dist/extension/ui.d.ts',
   'dist/extension/ui.js',
   'dist/index.d.ts',
@@ -84,6 +88,8 @@ if (tarball) {
     if (
       typeof root.AppAuthorizationError !== 'function' ||
       typeof background.createAuthRuntime !== 'function' ||
+      typeof background.createAdjacentTabAuthRuntime !== 'function' ||
+      background.TAB_AUTH_CALLBACK !== 'q1travel.appAuthorization.callback.v1' ||
       typeof ui.createAuthFacade !== 'function'
     ) {
       throw new Error('Published entry points do not expose the required API.')

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 — 2026-10-07
+
+- Add `createAdjacentTabAuthRuntime` with an adjacent authorization tab in the source window and a neutral Web callback message protocol.
+- Register external callback, tab-closure and alarm listeners synchronously. Persist PKCE transactions across service-worker suspension; claimed exchanges are never replayed after restart.
+- Verify the exact callback origin and URL, top frame, owned tab and state. Keep token exchange and sessions in the SDK, with cancellation fences before session commit.
+- Support exact HTTPS Web callbacks and explicitly enabled HTTP loopback callbacks in the opt-in tab runtime. Existing identity flow and Chromium callback validation remain compatible.
+- Require consumers to configure a narrowly scoped `externally_connectable` allowlist and the `alarms` permission. No Web page receives SDK tokens.
+
 ## 0.1.0 — 2026-09-27
 
 Published to npm at 14:51 UTC from source commit `bdd06eb` using a maintainer's local `npm publish q1travel-app-authorization-0.1.0.tgz --access public --provenance=false`. This release has no npm provenance attestation because npm trusted publishing was not configured and local publishing could not generate provenance.
