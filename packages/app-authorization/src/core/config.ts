@@ -36,7 +36,7 @@ const parseUrl = (value: string): URL => {
   }
 }
 
-export const resolveAuthConfig = (config: AuthConfig): ResolvedAuthConfig => {
+export const resolveAuthConfig = (config: AuthConfig, allowWebRedirect = false): ResolvedAuthConfig => {
   if (!config || typeof config !== 'object') invalidConfiguration()
   if (!CLIENT_ID_PATTERN.test(config.clientId)) invalidConfiguration()
   if (
@@ -51,9 +51,10 @@ export const resolveAuthConfig = (config: AuthConfig): ResolvedAuthConfig => {
   const redirect = parseUrl(config.redirectUri)
   const api = parseUrl(config.apiOrigin)
   if (
-    redirect.protocol !== 'https:' ||
-    !/^[a-p]{32}\.chromiumapp\.org$/u.test(redirect.hostname) ||
-    redirect.port !== '' ||
+    (redirect.protocol !== 'https:' && !(allowWebRedirect && config.allowInsecureLoopback === true &&
+      redirect.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(redirect.hostname))) ||
+    (!allowWebRedirect && !/^[a-p]{32}\.chromiumapp\.org$/u.test(redirect.hostname)) ||
+    (!allowWebRedirect && redirect.port !== '') ||
     redirect.username !== '' ||
     redirect.password !== '' ||
     redirect.search !== '' ||

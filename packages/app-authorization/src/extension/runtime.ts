@@ -20,8 +20,8 @@ import {
   verifyRemoteSession,
   type FetchPort,
 } from './http.js'
-import type { AuthFlowLauncher, ChromePort } from './ports.js'
-import { SessionRepository, type StoredSession } from './storage.js'
+import type { AuthFlowLauncher, AuthRuntimeChromePort, ChromePort } from './ports.js'
+import { SessionRepository, type StoredSession, type StoredTransaction } from './storage.js'
 
 export interface AuthRuntime {
   ready(): Promise<void>
@@ -38,11 +38,13 @@ export interface AuthRuntimeOptions {
 }
 
 export interface AuthRuntimeDependencies extends AuthRuntimeOptions {
-  readonly chrome: ChromePort
+  readonly chrome: AuthRuntimeChromePort & { readonly identity?: ChromePort['identity'] }
   readonly fetch: FetchPort
   readonly crypto?: CryptoPort
   readonly now?: () => number
   readonly verifyOnStartup?: boolean
+  readonly allowWebRedirect?: boolean
+  readonly installResumeHandler?: (handler: (callback: string, transaction: StoredTransaction) => Promise<AuthSession>, cancel: () => void) => void
 }
 
 const STARTUP_VERIFICATION_TIMEOUT_MS = 10_000
@@ -93,13 +95,14 @@ export const createAuthRuntimeWithDependencies = (
   inputConfig: AuthConfig,
   options: AuthRuntimeDependencies,
 ): AuthRuntime => {
-  const config: ResolvedAuthConfig = resolveAuthConfig(inputConfig)
+  const config: ResolvedAuthConfig = resolveAuthConfig(inputConfig, options.allowWebRedirect)
   const chrome = options.chrome
   const fetch = options.fetch
   const crypto = options.crypto ?? browserCryptoPort()
   const now = options.now ?? Date.now
   const launcher: AuthFlowLauncher = options.launcher ?? {
     async launch(authorizationUrl: string) {
+      if (!chrome.identity) throw new AppAuthorizationError(AuthErrorCode.configurationInvalid)
       const callback = await chrome.identity.launchWebAuthFlow({
         url: authorizationUrl,
         interactive: true,
@@ -164,6 +167,48 @@ export const createAuthRuntimeWithDependencies = (
     return { stored: result.stored, session: asPublicSession(result.stored) }
   }
 
+  const completeAuthorization = async (
+    callback: string,
+    prepared: StoredTransaction,
+    expectedGeneration: number,
+  ): Promise<AuthSession> => {
+    await startupReady
+    const code = validateAuthorizationCallback(
+      callback,
+      config.redirectUri,
+      prepared.state,
+    )
+    const stored = await exchangeAuthorizationCode(
+      fetch,
+      config,
+      code,
+      prepared.codeVerifier,
+      now(),
+    )
+    if (sessionGeneration !== expectedGeneration) {
+      await revokeSession(fetch, config, stored.accessToken).catch(() => undefined)
+      throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
+    }
+    const committed = await mutateSession(async () => {
+      if (sessionGeneration !== expectedGeneration) return false
+      await repository.write(stored)
+      if (sessionGeneration === expectedGeneration) {
+        latestLogin = { generation: expectedGeneration, stored }
+        return true
+      }
+      await repository.clearSession()
+      if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
+      return false
+    })
+    if (!committed || sessionGeneration !== expectedGeneration) {
+      await revokeSession(fetch, config, stored.accessToken).catch(() => undefined)
+      throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
+    }
+    const session = asPublicSession(stored)
+    publish(session)
+    return session
+  }
+
   const performLogin = async (expectedGeneration: number): Promise<AuthSession> => {
     await startupReady
     const prepared = await createAuthorizationRequest(
@@ -181,40 +226,7 @@ export const createAuthRuntimeWithDependencies = (
     })
     try {
       const callback = await launchAuthorization(prepared.authorizationUrl)
-      const code = validateAuthorizationCallback(
-        callback,
-        config.redirectUri,
-        prepared.state,
-      )
-      const stored = await exchangeAuthorizationCode(
-        fetch,
-        config,
-        code,
-        prepared.codeVerifier,
-        now(),
-      )
-      if (sessionGeneration !== expectedGeneration) {
-        await revokeSession(fetch, config, stored.accessToken).catch(() => undefined)
-        throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
-      }
-      const committed = await mutateSession(async () => {
-        if (sessionGeneration !== expectedGeneration) return false
-        await repository.write(stored)
-        if (sessionGeneration === expectedGeneration) {
-          latestLogin = { generation: expectedGeneration, stored }
-          return true
-        }
-        await repository.clearSession()
-        if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
-        return false
-      })
-      if (!committed || sessionGeneration !== expectedGeneration) {
-        await revokeSession(fetch, config, stored.accessToken).catch(() => undefined)
-        throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
-      }
-      const session = asPublicSession(stored)
-      publish(session)
-      return session
+      return await completeAuthorization(callback, prepared, expectedGeneration)
     } finally {
       await repository.clearTransaction()
     }
@@ -467,6 +479,9 @@ export const createAuthRuntimeWithDependencies = (
     })
     void startupVerification.catch(() => undefined)
   }
+
+  options.installResumeHandler?.((callback, transaction) =>
+    completeAuthorization(callback, transaction, ++sessionGeneration), () => { sessionGeneration += 1 })
 
   return Object.freeze(runtime)
 }

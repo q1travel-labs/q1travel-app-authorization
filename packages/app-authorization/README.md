@@ -128,3 +128,57 @@ The SDK deliberately keeps the simple session-storage design. Wrapping the store
 ## Upgrade from the former extension-specific package
 
 Replace the old package dependency and imports with `@q1travel/app-authorization/extension/background` in the service worker and `@q1travel/app-authorization/extension/ui` in extension pages. Remove tab-based authorization, external callback bridges, caller-supplied token exchange, UI fetch relays, and operation catalogs. Initialize one background runtime, use the facade in extension pages, and move business messages to the application's own typed background protocol.
+
+## Adjacent-tab authorization (0.2.0)
+
+The background entry also exports `createAdjacentTabAuthRuntime` and
+`TAB_AUTH_CALLBACK`. Construct one runtime synchronously at service-worker top
+level so Chrome can register its wake-up listeners:
+
+```ts
+const runtime = createAdjacentTabAuthRuntime(config, {
+  chrome,
+  getSourceTab: async () => {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    if (!tab) throw new Error('No source tab')
+    return tab
+  },
+})
+await runtime.ready()
+```
+
+Use the normal UI facade. An explicit login opens a blank tab in the source
+window at `source.index + 1`, records ownership and PKCE state in
+`chrome.storage.session`, then navigates to the authorization endpoint. Declare
+`alarms` and an `externally_connectable.matches` entry restricted to the trusted
+callback origin/path. The callback must be an exact registered HTTPS URL without
+query or fragment. HTTP localhost/127.0.0.1 callbacks require
+`allowInsecureLoopback: true`; this is for local development only.
+
+The callback page preserves its initial callback URL in memory, removes its
+query from browser history, and sends the following closed envelope to its
+registered extension ID:
+
+```ts
+{ type: 'q1travel.appAuthorization.callback.v1', callbackUrl }
+```
+
+Only a top-frame Web sender whose origin and cleaned URL exactly match the
+configured callback and whose tab ID matches the persisted owned tab is
+accepted. State and callback shape are checked before SDK token exchange. The
+response is `{ ok: true }` or `{ ok: false, error: { code, message, retryable } }`;
+it carries no token or session. Web owns no PKCE verifier or token exchange.
+
+Transactions survive worker restart while authorization is pending. A callback
+claims its transaction durably before exchange; a restarted worker cancels an
+already claimed exchange instead of replaying the code. Manual tab closure,
+logout or the ten-minute maximum alarm expires the flow. Concurrent login calls
+share one pending operation; after restart a new login action focuses the
+existing owned tab. Completion closes only the recorded tab with a matching
+Chrome opener relation and restores the source only if the auth tab remains
+active in the focused source window. The default `createAuthRuntime` identity
+flow remains available.
+
+Real-browser acceptance must separately verify external callback delivery,
+worker suspension/restart, exact adjacent placement and focused-window behavior.
+Unit tests and packing alone do not establish that acceptance.

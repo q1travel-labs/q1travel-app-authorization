@@ -36,6 +36,8 @@ export interface ChromePort {
   readonly storage: { readonly session: SessionStoragePort }
 }
 
+export type AuthRuntimeChromePort = Pick<ChromePort, 'runtime' | 'storage'>
+
 export interface AuthFlowLauncher {
   launch(authorizationUrl: string): Promise<string>
 }

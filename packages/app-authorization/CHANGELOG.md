@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.1.0
+## 0.2.0 — 2026-10-07
+
+- Add `createAdjacentTabAuthRuntime` with an adjacent authorization tab in the source window and a neutral Web callback message protocol.
+- Register external callback, tab-closure and alarm listeners synchronously. Persist PKCE transactions across service-worker suspension; claimed exchanges are never replayed after restart.
+- Verify the exact callback origin and URL, top frame, owned tab and state. Keep token exchange and sessions in the SDK, with cancellation fences before session commit.
+- Support exact HTTPS Web callbacks and explicitly enabled HTTP loopback callbacks in the opt-in tab runtime. Existing identity flow and Chromium callback validation remain compatible.
+- Require consumers to configure a narrowly scoped `externally_connectable` allowlist and the `alarms` permission. No Web page receives SDK tokens.
+
+## 0.1.0 — 2026-09-27
+
+Published to npm at 14:51 UTC from source commit `bdd06eb` using a maintainer's local `npm publish q1travel-app-authorization-0.1.0.tgz --access public --provenance=false`. This release has no npm provenance attestation because npm trusted publishing was not configured and local publishing could not generate provenance.
+The tarball had npm shasum `29502bae252c587ebda8fa8d0ef20e75762ce3b6`, with 35 files (15.0 kB packed, 64.2 kB unpacked). `npm view` returned 404 during registry propagation; a later registry readback confirmed the version and shasum.
+For subsequent releases, use `.github/workflows/release-provenance.yml`; the repository is public, and an npm trusted publisher must first be configured.
 
 - Publish the neutral `@q1travel/app-authorization` package.
 - Add authorization-code login with PKCE, session verification, revocation, and authorized fetch.
