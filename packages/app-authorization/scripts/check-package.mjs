@@ -53,7 +53,7 @@ const files = tarball
       .split('\n')
       .filter((file) => file.startsWith('package/') && !file.endsWith('/'))
       .map((file) => file.slice('package/'.length))
-  : JSON.parse(
+  : Object.values(JSON.parse(
       execFileSync('npm', ['pack', '--dry-run', '--json'], {
         encoding: 'utf8',
         env: {
@@ -62,7 +62,7 @@ const files = tarball
             process.env.NPM_CONFIG_CACHE ?? '/tmp/q1travel-app-authorization-npm-cache',
         },
       }),
-    )[0]?.files?.map((entry) => entry.path)
+    ))[0]?.files?.map((entry) => entry.path)
 if (!Array.isArray(files)) throw new Error('npm pack did not return a file list.')
 
 const actual = new Set(files)
