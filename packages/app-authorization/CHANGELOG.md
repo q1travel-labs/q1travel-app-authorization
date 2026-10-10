@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 — 2026-10-10
+
+- Add an optional background authorization context port. Bind opaque context to PKCE, persist opt-in pending flows under v2 keys, and check context before exchange and session commit; compensate acquired tokens when commit fails.
+- Supply trusted Chrome source metadata to adjacent-tab source resolution, capture the source before startup waits, and reject competing UI sources. Keep facade, session, message and token contracts unchanged.
+
 ## 0.2.0 — 2026-10-07
 
 - Add `createAdjacentTabAuthRuntime` with an adjacent authorization tab in the source window and a neutral Web callback message protocol.

@@ -12,6 +12,7 @@ export interface AuthorizationRequestConfig {
 
 export interface PreparedAuthorizationRequest {
   readonly authorizationUrl: string
+  readonly codeChallenge: string
   readonly codeVerifier: string
   readonly state: string
 }
@@ -48,7 +49,7 @@ export const createAuthorizationRequest = async (
   url.searchParams.set('state', state)
   url.searchParams.set('code_challenge', challenge)
   url.searchParams.set('code_challenge_method', 'S256')
-  return { authorizationUrl: url.toString(), codeVerifier, state }
+  return { authorizationUrl: url.toString(), codeChallenge: challenge, codeVerifier, state }
 }
 
 export const browserCryptoPort = (): CryptoPort => ({

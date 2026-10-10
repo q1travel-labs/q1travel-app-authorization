@@ -61,6 +61,8 @@ describe('PKCE authorization request', () => {
     expect(url.searchParams.get('code_challenge')).toBe(
       '6oZqdX5MOLq_qBJ8vppAnT4fk6AP8UiP9zX8-Rev_9A',
     )
+    expect(request.codeChallenge).toBe('6oZqdX5MOLq_qBJ8vppAnT4fk6AP8UiP9zX8-Rev_9A')
+    expect(request.codeChallenge).toBe(url.searchParams.get('code_challenge'))
     expect(url.searchParams.get('scope')).toBe('orders:read orders:write')
   })
 })

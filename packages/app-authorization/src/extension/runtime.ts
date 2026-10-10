@@ -1,3 +1,4 @@
+import { assertAuthorizationContext, prepareAuthorizationContext, type AuthorizationContextPort } from './authorizationContextPort.js'
 import { validateAuthorizationCallback } from '../core/callback.js'
 import {
   browserCryptoPort,
@@ -34,6 +35,7 @@ export interface AuthRuntime {
 }
 
 export interface AuthRuntimeOptions {
+  readonly authorizationContextPort?: AuthorizationContextPort
   readonly launcher?: AuthFlowLauncher
 }
 
@@ -44,7 +46,7 @@ export interface AuthRuntimeDependencies extends AuthRuntimeOptions {
   readonly now?: () => number
   readonly verifyOnStartup?: boolean
   readonly allowWebRedirect?: boolean
-  readonly installResumeHandler?: (handler: (callback: string, transaction: StoredTransaction) => Promise<AuthSession>, cancel: () => void) => void
+  readonly installResumeHandler?: (handler: (callback: string, transaction: StoredTransaction) => Promise<AuthSession>, cancel: () => Promise<void>) => void
 }
 
 const STARTUP_VERIFICATION_TIMEOUT_MS = 10_000
@@ -120,6 +122,25 @@ export const createAuthRuntimeWithDependencies = (
   const mutateSession = createSerialExecutor()
   let loginInFlight: Promise<AuthSession> | null = null
   let sessionGeneration = 0
+  const contextWaiters = new Map<number, () => void>()
+  let resumeInFlight: { generation: number; promise: Promise<AuthSession>; cancelledDuringContext: boolean } | null = null
+  const advanceGeneration = () => {
+    if (resumeInFlight?.generation === sessionGeneration && contextWaiters.has(sessionGeneration)) {
+      resumeInFlight.cancelledDuringContext = true
+    }
+    sessionGeneration += 1
+    for (const cancel of contextWaiters.values()) cancel()
+    return sessionGeneration
+  }
+  const awaitContext = async <T>(operation: Promise<T>, expectedGeneration: number): Promise<T> => {
+    void operation.catch(() => undefined)
+    assertGeneration(expectedGeneration)
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      contextWaiters.set(expectedGeneration, () => reject(new AppAuthorizationError(AuthErrorCode.interactionCancelled)))
+    })
+    try { return await Promise.race([operation, cancelled]) }
+    finally { contextWaiters.delete(expectedGeneration) }
+  }
   let latestLogin: { readonly generation: number; readonly stored: StoredSession } | null = null
   let startupVerification: Promise<AuthSession> | null = null
   let startupVerificationSettled = true
@@ -178,55 +199,89 @@ export const createAuthRuntimeWithDependencies = (
       config.redirectUri,
       prepared.state,
     )
-    const stored = await exchangeAuthorizationCode(
-      fetch,
-      config,
-      code,
-      prepared.codeVerifier,
-      now(),
-    )
-    if (sessionGeneration !== expectedGeneration) {
-      await revokeSession(fetch, config, stored.accessToken).catch(() => undefined)
-      throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
-    }
-    const committed = await mutateSession(async () => {
-      if (sessionGeneration !== expectedGeneration) return false
-      await repository.write(stored)
-      if (sessionGeneration === expectedGeneration) {
-        latestLogin = { generation: expectedGeneration, stored }
-        return true
+    const port = options.authorizationContextPort
+    let stored: StoredSession | undefined
+    try {
+      if (port) {
+        assertGeneration(expectedGeneration)
+        await awaitContext(assertAuthorizationContext(port, prepared.authorizationContextToken, 'beforeExchange'), expectedGeneration)
+        assertGeneration(expectedGeneration)
+      } else if (prepared.authorizationContextToken !== undefined) {
+        throw new AppAuthorizationError(AuthErrorCode.interactionFailed)
       }
-      await repository.clearSession()
-      if (latestLogin?.stored.accessToken === stored.accessToken) latestLogin = null
-      return false
-    })
-    if (!committed || sessionGeneration !== expectedGeneration) {
-      await revokeSession(fetch, config, stored.accessToken).catch(() => undefined)
-      throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
+      stored = await exchangeAuthorizationCode(fetch, config, code, prepared.codeVerifier, now())
+      assertGeneration(expectedGeneration)
+      if (port) {
+        await awaitContext(assertAuthorizationContext(port, prepared.authorizationContextToken, 'beforeSessionCommit'), expectedGeneration)
+        assertGeneration(expectedGeneration)
+      }
+      const acquired = stored
+      await mutateSession(async () => {
+        assertGeneration(expectedGeneration)
+        await repository.write(acquired)
+        if (sessionGeneration !== expectedGeneration) {
+          await repository.clearSession()
+          throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
+        }
+        latestLogin = { generation: expectedGeneration, stored: acquired }
+      })
+      assertGeneration(expectedGeneration)
+      const session = asPublicSession(acquired)
+      publish(session)
+      return session
+    } catch (error) {
+      let cleanupFailure: unknown
+      if (port) {
+        try { await clearFailedContext(expectedGeneration) } catch (failure) { cleanupFailure = failure }
+      }
+      let revocationFailed = false
+      if (stored) {
+        try { await revokeSession(fetch, config, stored.accessToken) }
+        catch { revocationFailed = true }
+      }
+      if (cleanupFailure) throw cleanupFailure
+      if (revocationFailed) throw new AppAuthorizationError(AuthErrorCode.revocationUnconfirmed)
+      throw error
     }
-    const session = asPublicSession(stored)
-    publish(session)
-    return session
+  }
+
+  const assertGeneration = (expected: number) => {
+    if (sessionGeneration !== expected) throw new AppAuthorizationError(AuthErrorCode.interactionCancelled)
+  }
+  const clearFailedContext = async (expected: number) => {
+    const cleared = await mutateSession(async () => {
+      if (latestLogin && latestLogin.generation > expected) return false
+      await repository.clearSession()
+      latestLogin = null
+      return true
+    })
+    if (cleared) publish({ status: 'signed-out' })
   }
 
   const performLogin = async (expectedGeneration: number): Promise<AuthSession> => {
     await startupReady
-    const prepared = await createAuthorizationRequest(
-      {
-        authorizeUrl: config.authorizeUrl,
-        clientId: config.clientId,
-        redirectUri: config.redirectUri,
-        scopes: config.scopes,
-      },
-      crypto,
-    )
-    await repository.writeTransaction({
-      state: prepared.state,
-      codeVerifier: prepared.codeVerifier,
-    })
     try {
-      const callback = await launchAuthorization(prepared.authorizationUrl)
-      return await completeAuthorization(callback, prepared, expectedGeneration)
+      const prepared = await createAuthorizationRequest(config, crypto)
+      assertGeneration(expectedGeneration)
+      const port = options.authorizationContextPort
+      const contextToken = port ? await awaitContext(prepareAuthorizationContext(port, {
+        clientId: config.clientId, redirectUri: config.redirectUri,
+        state: prepared.state, codeChallenge: prepared.codeChallenge,
+      }), expectedGeneration) : undefined
+      assertGeneration(expectedGeneration)
+      const transaction: StoredTransaction = {
+        state: prepared.state, codeVerifier: prepared.codeVerifier,
+        ...(contextToken === undefined ? {} : { authorizationContextToken: contextToken }),
+      }
+      const url = new URL(prepared.authorizationUrl)
+      if (contextToken !== undefined) url.searchParams.set('authorization_context', contextToken)
+      await repository.writeTransaction(transaction)
+      assertGeneration(expectedGeneration)
+      const callback = await launchAuthorization(url.toString())
+      return await completeAuthorization(callback, transaction, expectedGeneration)
+    } catch (error) {
+      if (options.authorizationContextPort) await clearFailedContext(expectedGeneration)
+      throw error
     } finally {
       await repository.clearTransaction()
     }
@@ -234,8 +289,8 @@ export const createAuthRuntimeWithDependencies = (
 
   const login = (): Promise<AuthSession> => {
     if (loginInFlight) return loginInFlight
-    sessionGeneration += 1
-    const operation = performLogin(sessionGeneration)
+    const expectedGeneration = advanceGeneration()
+    const operation = performLogin(expectedGeneration)
     const tracked = operation.finally(() => {
       if (loginInFlight === tracked) loginInFlight = null
     })
@@ -345,7 +400,7 @@ export const createAuthRuntimeWithDependencies = (
     },
     login,
     async logout() {
-      const expectedGeneration = ++sessionGeneration
+      const expectedGeneration = advanceGeneration()
       let stored: StoredSession | null = null
       let readFailure: unknown
       try {
@@ -480,8 +535,24 @@ export const createAuthRuntimeWithDependencies = (
     void startupVerification.catch(() => undefined)
   }
 
-  options.installResumeHandler?.((callback, transaction) =>
-    completeAuthorization(callback, transaction, ++sessionGeneration), () => { sessionGeneration += 1 })
+  options.installResumeHandler?.((callback, transaction) => {
+    const generation = advanceGeneration()
+    const promise = completeAuthorization(callback, transaction, generation)
+    resumeInFlight = { generation, promise, cancelledDuringContext: false }
+    return promise
+  }, async () => {
+    const pending = resumeInFlight && (resumeInFlight.cancelledDuringContext || contextWaiters.has(resumeInFlight.generation))
+      ? resumeInFlight : undefined
+    const generation = pending?.generation ?? sessionGeneration
+    advanceGeneration()
+    if (pending) pending.cancelledDuringContext = false
+    const completion = pending?.promise
+    const cleanup = options.authorizationContextPort ? clearFailedContext(generation) : Promise.resolve()
+    await Promise.all([cleanup, completion?.catch((error: unknown) => {
+      if (error instanceof AppAuthorizationError && error.code === AuthErrorCode.interactionCancelled) return
+      throw error
+    })])
+  })
 
   return Object.freeze(runtime)
 }
