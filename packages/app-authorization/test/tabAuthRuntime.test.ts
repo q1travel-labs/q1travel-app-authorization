@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { CryptoPort } from '../src/core/pkce.js'
 import { resolveAuthConfig } from '../src/core/config.js'
 import { createAdjacentTabAuthRuntimeWithDependencies, TAB_AUTH_CALLBACK } from '../src/extension/tabAuthRuntime.js'
 import type { AuthTab, ExternalCallbackListener } from '../src/extension/tabAuthPorts.js'
@@ -45,8 +46,8 @@ const harness = (storage = new MemorySessionStorage()) => {
       onAlarm: { addListener: (listener: (alarm: { name: string }) => void) => { alarms.add(listener) } },
     },
   }
-  const create = () => createAdjacentTabAuthRuntimeWithDependencies(config, {
-    chrome, fetch, now: () => currentTime, getSourceTab: async () => tabs.get(7)!, timeoutMs: 1_000,
+  const create = (crypto?: CryptoPort) => createAdjacentTabAuthRuntimeWithDependencies(config, {
+    chrome, fetch, crypto, now: () => currentTime, getSourceTab: async () => tabs.get(7)!, timeoutMs: 1_000,
   })
   const dispatch = async (url?: string, senderOverrides: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => {
     const transaction = storage.values[key] as { state: string } | undefined
@@ -247,7 +248,7 @@ describe('persistent adjacent-tab authorization', () => {
     vi.useFakeTimers()
     let release!: (tab: AuthTab) => void
     h.chrome.tabs.create.mockImplementationOnce(() => new Promise<AuthTab>((accept) => { release = accept }) as never)
-    const runtime = h.create()
+    const runtime = h.create({ randomBytes: () => new Uint8Array(32), sha256: async () => new Uint8Array(32) })
     const login = runtime.login()
     const rejection = expect(login).rejects.toMatchObject({ code: 'interaction_cancelled' })
     await vi.advanceTimersByTimeAsync(0)

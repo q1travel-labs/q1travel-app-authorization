@@ -182,3 +182,51 @@ flow remains available.
 Real-browser acceptance must separately verify external callback delivery,
 worker suspension/restart, exact adjacent placement and focused-window behavior.
 Unit tests and packing alone do not establish that acceptance.
+
+## Optional background authorization context (unreleased)
+
+Both background runtimes accept `authorizationContextPort?: AuthorizationContextPort`.
+Import this type and `AuthorizationSourceMetadata` from the background subpath.
+The consumer implements:
+
+```ts
+interface AuthorizationContextPort {
+  prepare(input: {
+    clientId: string; redirectUri: string; state: string; codeChallenge: string;
+    sourceTabId?: number;
+  }): Promise<{ token: string }>;
+  assertCurrent(input: {
+    token: string; phase: 'beforeExchange' | 'beforeSessionCommit';
+  }): Promise<void>;
+}
+```
+
+`prepare` must return exactly one own field, `token`, containing a canonical
+43-character base64url encoding of 32 bytes. The SDK adds it only to the
+`authorization_context` authorize query and v2 pending transaction. The port
+never receives access tokens or the PKCE verifier. Context failures use fixed
+SDK errors; acquired tokens are revoked on failed commit, with
+`revocation_unconfirmed` if remote revocation cannot be confirmed. A failed
+strict flow clears its own local session without clearing a newer login.
+
+Adjacent-tab `getSourceTab(source?)` receives only trusted Chrome metadata:
+`{ tabId?: number, frameId?: number, documentId?: string }`. Resolve an embedded
+extension frame from `source.tabId`; verify the consumer's original top document
+and identity observation, and never substitute the active tab. The SDK rejects
+a returned tab ID that differs from this original ID. For a popup with no tab,
+capture the active tab immediately when called, before awaiting application
+startup. The SDK invokes this resolver once as it accepts the operation, before
+its own startup waits, and preserves the resolved source throughout PKCE and
+callback handling. Concurrent login requests from a different UI source are
+rejected. Direct background `login()` passes no metadata; the consumer is
+responsible for choosing a trustworthy source. The ordinary identity runtime
+omits `sourceTabId` from `prepare`.
+
+Opt-in pending flows use independent v2 keys. Enabling the port cancels old v1
+pending flows; disabling it cancels v2 pending flows. Malformed records are
+removed. Strict recovery runs the same context checks; if a restarted consumer
+lost its token-to-source association, it must reject rather than reconstruct
+identity from the token. A new strict login does not attach itself to another
+pending authorization. The public facade remains `login()` and its request
+still contains exactly `protocol`, `requestId`, and `action`; public session,
+core configuration, token exchange and session storage shapes are unchanged.

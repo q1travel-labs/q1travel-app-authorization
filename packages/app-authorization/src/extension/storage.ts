@@ -1,7 +1,9 @@
 import { AppAuthorizationError, AuthErrorCode } from '../core/types.js'
+import { isAuthorizationContextToken } from './authorizationContextPort.js'
 import type { SessionStoragePort } from './ports.js'
 
 export const SESSION_STORAGE_KEY = 'q1travel.appAuthorization.session.v1'
+export const CONTEXT_TRANSACTION_STORAGE_KEY = 'q1travel.appAuthorization.transaction.v2'
 export const TRANSACTION_STORAGE_KEY = 'q1travel.appAuthorization.transaction.v1'
 
 export interface StoredSession {
@@ -14,6 +16,7 @@ export interface StoredSession {
 export interface StoredTransaction {
   readonly state: string
   readonly codeVerifier: string
+  readonly authorizationContextToken?: string
 }
 
 const OPAQUE_PATTERN = /^[A-Za-z0-9_-]{43}$/u
@@ -78,7 +81,14 @@ export class SessionRepository {
   async writeTransaction(transaction: StoredTransaction): Promise<void> {
     await this.ready
     try {
-      await this.storage.set({ [TRANSACTION_STORAGE_KEY]: structuredClone(transaction) })
+      const contextual = transaction.authorizationContextToken !== undefined
+      const expected = contextual ? ['state', 'codeVerifier', 'authorizationContextToken'] : ['state', 'codeVerifier']
+      if (!hasExactKeys(transaction as unknown as Record<string, unknown>, expected) ||
+        !OPAQUE_PATTERN.test(transaction.state) || !OPAQUE_PATTERN.test(transaction.codeVerifier) ||
+        (contextual && !isAuthorizationContextToken(transaction.authorizationContextToken))) {
+        throw new Error('Invalid transaction.')
+      }
+      await this.storage.set({ [contextual ? CONTEXT_TRANSACTION_STORAGE_KEY : TRANSACTION_STORAGE_KEY]: structuredClone(transaction) })
     } catch {
       throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
     }
@@ -87,7 +97,7 @@ export class SessionRepository {
   async clearTransaction(): Promise<void> {
     await this.ready
     try {
-      await this.storage.remove(TRANSACTION_STORAGE_KEY)
+      await this.storage.remove([TRANSACTION_STORAGE_KEY, CONTEXT_TRANSACTION_STORAGE_KEY])
     } catch {
       throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
     }
@@ -105,7 +115,7 @@ export class SessionRepository {
   async clear(): Promise<void> {
     await this.ready
     try {
-      await this.storage.remove([SESSION_STORAGE_KEY, TRANSACTION_STORAGE_KEY])
+      await this.storage.remove([SESSION_STORAGE_KEY, TRANSACTION_STORAGE_KEY, CONTEXT_TRANSACTION_STORAGE_KEY])
     } catch {
       throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
     }

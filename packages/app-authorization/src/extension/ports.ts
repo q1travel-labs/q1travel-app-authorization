@@ -7,7 +7,9 @@ export interface SessionStoragePort {
 
 export interface RuntimeMessageSender {
   readonly id?: string
-  readonly tab?: unknown
+  readonly tab?: { readonly id?: number }
+  readonly frameId?: number
+  readonly documentId?: string
   readonly url?: string
   readonly origin?: string
 }
@@ -40,4 +42,10 @@ export type AuthRuntimeChromePort = Pick<ChromePort, 'runtime' | 'storage'>
 
 export interface AuthFlowLauncher {
   launch(authorizationUrl: string): Promise<string>
+}
+
+export interface AuthorizationSourceMetadata {
+  readonly tabId?: number
+  readonly frameId?: number
+  readonly documentId?: string
 }

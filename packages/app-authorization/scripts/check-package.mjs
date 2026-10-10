@@ -15,6 +15,8 @@ const expected = new Set([
   'dist/core/pkce.js',
   'dist/core/types.d.ts',
   'dist/core/types.js',
+  'dist/extension/authorizationContextPort.d.ts',
+  'dist/extension/authorizationContextPort.js',
   'dist/extension/background.d.ts',
   'dist/extension/background.js',
   'dist/extension/facade.d.ts',

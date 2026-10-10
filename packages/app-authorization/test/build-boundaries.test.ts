@@ -26,6 +26,9 @@ describe('published entry boundaries', () => {
       const output = readModuleGraph(entry)
       expect(output, entry).not.toContain('q1travel.appAuthorization.session.v1')
       expect(output, entry).not.toContain('q1travel.appAuthorization.transaction.v1')
+      expect(output, entry).not.toContain('q1travel.appAuthorization.transaction.v2')
+      expect(output, entry).not.toContain('q1travel.appAuthorization.tabTransaction.v2')
+      expect(output, entry).not.toContain('authorizationContextToken')
       expect(output, entry).not.toContain('authorizedFetch')
       expect(output, entry).not.toContain('/token')
     }

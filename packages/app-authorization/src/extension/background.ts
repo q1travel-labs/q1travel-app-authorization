@@ -1,6 +1,8 @@
 export { createAdjacentTabAuthRuntime, TAB_AUTH_CALLBACK } from './tabAuthRuntime.js'
 export type { AdjacentTabAuthRuntimeOptions } from './tabAuthRuntime.js'
 export type { TabAuthChromePort, AuthTab, ExternalCallbackSender } from './tabAuthPorts.js'
+export type { AuthorizationContextPort } from './authorizationContextPort.js'
+export type { AuthorizationSourceMetadata } from './ports.js'
 export type { AuthFlowLauncher } from './ports.js'
 export type { AuthRuntime, AuthRuntimeOptions } from './runtime.js'
 
