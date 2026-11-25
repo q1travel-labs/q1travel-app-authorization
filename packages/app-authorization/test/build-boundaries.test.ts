@@ -30,6 +30,7 @@ describe('published entry boundaries', () => {
       expect(output, entry).not.toContain('q1travel.appAuthorization.tabTransaction.v2')
       expect(output, entry).not.toContain('authorizationContextToken')
       expect(output, entry).not.toContain('authorizedFetch')
+      expect(output, entry).not.toContain('/contexts')
       expect(output, entry).not.toContain('/token')
     }
   })

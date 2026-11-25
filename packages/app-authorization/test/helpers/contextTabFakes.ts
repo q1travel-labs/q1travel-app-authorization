@@ -1,15 +1,16 @@
+import type { AuthConfig } from '../../src/core/config.js'
 import { expect, vi } from 'vitest'
 import { createAdjacentTabAuthRuntimeWithDependencies, TAB_AUTH_CALLBACK, type AdjacentTabAuthRuntimeDependencies } from '../../src/extension/tabAuthRuntime.js'
 import type { AuthTab, ExternalCallbackListener } from '../../src/extension/tabAuthPorts.js'
 import { createChromePort, jsonResponse, MemorySessionStorage } from './fakes.js'
 
 const redirectUri = 'https://web.example.test/oauth-callback.html'
-const config = { clientId: 'client-v2', redirectUri, scopes: ['orders:read'], apiOrigin: 'https://api.example.test' }
+const defaultConfig = { clientId: 'client-v2', redirectUri, scopes: ['orders:read'], authOrigin: 'https://connect.example.test', apiOrigin: 'https://api.example.test' }
 const key = 'q1travel.appAuthorization.tabTransaction.v1'
 const contextKey = 'q1travel.appAuthorization.tabTransaction.v2'
 const token = 't'.repeat(43)
 
-export const contextTabHarness = (storage = new MemorySessionStorage()) => {
+export const contextTabHarness = (storage = new MemorySessionStorage(), config: AuthConfig = defaultConfig) => {
   let currentTime = 1_000
   const base = createChromePort(storage)
   const external = new Set<ExternalCallbackListener>()
@@ -49,8 +50,8 @@ export const contextTabHarness = (storage = new MemorySessionStorage()) => {
   })
   const dispatch = async (url?: string, senderOverrides: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => {
     const transaction = (storage.values[contextKey] ?? storage.values[key]) as { state: string } | undefined
-    const callbackUrl = url ?? `${redirectUri}?code=${'c'.repeat(43)}&state=${transaction?.state}`
-    const sender = { origin: 'https://web.example.test', url: callbackUrl, frameId: 0, tab: { id: 11 }, ...senderOverrides }
+    const callbackUrl = url ?? `${config.redirectUri}?code=${'c'.repeat(43)}&state=${transaction?.state}`
+    const sender = { origin: new URL(config.redirectUri).origin, url: callbackUrl, frameId: 0, tab: { id: 11 }, ...senderOverrides }
     for (const listener of external) {
       let resolve!: (response: unknown) => void
       const response = new Promise<unknown>((accept) => { resolve = accept })

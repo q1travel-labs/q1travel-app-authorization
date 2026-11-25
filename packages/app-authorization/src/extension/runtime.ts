@@ -1,4 +1,5 @@
 import { assertAuthorizationContext, prepareAuthorizationContext, type AuthorizationContextPort } from './authorizationContextPort.js'
+import { reservedProtocolPaths } from '../core/protocolEndpoints.js'
 import { validateAuthorizationCallback } from '../core/callback.js'
 import {
   browserCryptoPort,
@@ -17,6 +18,7 @@ import {
 } from '../core/types.js'
 import {
   exchangeAuthorizationCode,
+  resourceFetchTarget,
   revokeSession,
   verifyRemoteSession,
   type FetchPort,
@@ -98,6 +100,7 @@ export const createAuthRuntimeWithDependencies = (
   options: AuthRuntimeDependencies,
 ): AuthRuntime => {
   const config: ResolvedAuthConfig = resolveAuthConfig(inputConfig, options.allowWebRedirect)
+  const reservedPaths = reservedProtocolPaths(config.pathPrefix)
   const chrome = options.chrome
   const fetch = options.fetch
   const crypto = options.crypto ?? browserCryptoPort()
@@ -265,7 +268,7 @@ export const createAuthRuntimeWithDependencies = (
       assertGeneration(expectedGeneration)
       const port = options.authorizationContextPort
       const contextToken = port ? await awaitContext(prepareAuthorizationContext(port, {
-        clientId: config.clientId, redirectUri: config.redirectUri,
+        contextsUrl: config.contextsUrl, clientId: config.clientId, redirectUri: config.redirectUri,
         state: prepared.state, codeChallenge: prepared.codeChallenge,
       }), expectedGeneration) : undefined
       assertGeneration(expectedGeneration)
@@ -447,24 +450,7 @@ export const createAuthRuntimeWithDependencies = (
       return () => subscribers.delete(callback)
     },
     async authorizedFetch(input, init = {}) {
-      let url: URL
-      try {
-        url = input instanceof URL
-          ? new URL(input.toString())
-          : typeof input === 'string'
-            ? new URL(input)
-            : new URL(input.url)
-      } catch {
-        throw new AppAuthorizationError(AuthErrorCode.requestNotAllowed)
-      }
-      if (
-        url.origin !== config.apiOrigin ||
-        url.username !== '' ||
-        url.password !== '' ||
-        url.protocol !== new URL(config.apiOrigin).protocol
-      ) {
-        throw new AppAuthorizationError(AuthErrorCode.requestNotAllowed)
-      }
+      const target = resourceFetchTarget(input, config.apiOrigin, reservedPaths)
       const inputHeaders = input instanceof Request ? input.headers : undefined
       const headers = new Headers(inputHeaders)
       if (init.headers) {
@@ -479,8 +465,7 @@ export const createAuthRuntimeWithDependencies = (
       headers.set('authorization', `Bearer ${stored.accessToken}`)
       let response: Response
       try {
-        const target = input instanceof Request ? input : url.toString()
-        response = await fetch(target, { ...init, headers, credentials: 'omit' })
+        response = await fetch(target, { ...init, headers, credentials: 'omit', redirect: 'error' })
       } catch {
         throw new AppAuthorizationError(AuthErrorCode.networkUnavailable)
       }

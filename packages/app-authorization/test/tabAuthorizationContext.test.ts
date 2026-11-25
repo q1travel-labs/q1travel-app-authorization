@@ -29,7 +29,7 @@ describe('adjacent backend context and trusted source', () => {
     const login = dispatchLogin(h, sender(7))
     await h.started()
     expect(getSourceTab).toHaveBeenCalledExactlyOnceWith({ tabId: 7, frameId: 3, documentId: 'ui-document' })
-    expect(context.prepare).toHaveBeenCalledWith({ sourceTabId: 7, clientId: 'client-v2', redirectUri: 'https://web.example.test/oauth-callback.html', state: expect.any(String), codeChallenge: expect.any(String) })
+    expect(context.prepare).toHaveBeenCalledWith({ contextsUrl: 'https://connect.example.test/api/app-authorizations/v1/contexts', sourceTabId: 7, clientId: 'client-v2', redirectUri: 'https://web.example.test/oauth-callback.html', state: expect.any(String), codeChallenge: expect.any(String) })
     expect(Object.keys(h.storage.values[key] as object).sort()).toEqual(['state', 'codeVerifier', 'config', 'sourceTabId', 'sourceWindowId', 'authTabId', 'expiresAt', 'phase', 'authorizationContextToken'].sort())
     expect(h.storage.values[legacyKey]).toBeUndefined()
     expect(await h.dispatch()).toEqual({ ok: true })

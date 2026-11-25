@@ -10,6 +10,41 @@ export type FetchPort = (
   init?: RequestInit,
 ) => Promise<Response>
 
+// Inspect the original hierarchy before URL parsing can discard separators or dot segments.
+const hasAmbiguousPath = (address: string): boolean => {
+  const [hierarchy] = address.split(/[?#]/u, 1)
+  if (address.trim() !== address || /[\u0000-\u001f\\]/u.test(hierarchy)) return true
+  return hierarchy.split('/').some((segment) => {
+    if (!segment.includes('%')) return false
+    const decoded = decodeURIComponent(segment)
+    return /[\\/]/u.test(decoded) || /%[\da-f]{2}/iu.test(decoded) ||
+      decoded === '.' || decoded === '..'
+  })
+}
+
+export const resourceFetchTarget = (
+  input: RequestInfo | URL,
+  apiOrigin: string,
+  reservedPaths: ReadonlySet<string>,
+): string | Request => {
+  // Fetch uses the Request's internal URL even when an instance shadows its url getter.
+  try {
+    const address: string = input instanceof Request
+      ? Reflect.get(Request.prototype, 'url', input)
+      : input instanceof URL ? input.href : input
+    if (typeof address !== 'string') throw new TypeError()
+    const url = new URL(address)
+    if (url.origin === apiOrigin && url.protocol === new URL(apiOrigin).protocol &&
+      !url.username && !url.password && !hasAmbiguousPath(address)) {
+      const path = decodeURIComponent(url.pathname).replace(/\/{2,}/gu, '/').replace(/\/$/u, '').toLowerCase()
+      if (!reservedPaths.has(path)) return input instanceof Request ? input : url.href
+    }
+  } catch {
+    // Invalid URLs and malformed percent escapes are denied before the session is read.
+  }
+  throw new AppAuthorizationError(AuthErrorCode.requestNotAllowed)
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 const hasExactKeys = (value: Record<string, unknown>, expected: readonly string[]) => {
@@ -51,7 +86,7 @@ const request = async (
   init: RequestInit,
 ): Promise<Response> => {
   try {
-    return await fetch(input, init)
+    return await fetch(input, { ...init, redirect: 'error' })
   } catch {
     throw new AppAuthorizationError(AuthErrorCode.networkUnavailable)
   }

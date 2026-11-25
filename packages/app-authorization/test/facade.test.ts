@@ -17,6 +17,7 @@ describe('extension UI facade', () => {
         clientId: 'extension-client',
         redirectUri,
         scopes: ['orders:read'],
+        authOrigin: 'https://connect.example.com',
         apiOrigin: 'https://api.example.com',
       },
       {
