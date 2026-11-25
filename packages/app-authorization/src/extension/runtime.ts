@@ -18,6 +18,7 @@ import {
 } from '../core/types.js'
 import {
   exchangeAuthorizationCode,
+  resourceFetchTarget,
   revokeSession,
   verifyRemoteSession,
   type FetchPort,
@@ -449,25 +450,7 @@ export const createAuthRuntimeWithDependencies = (
       return () => subscribers.delete(callback)
     },
     async authorizedFetch(input, init = {}) {
-      let url: URL
-      try {
-        url = input instanceof URL
-          ? new URL(input.toString())
-          : typeof input === 'string'
-            ? new URL(input)
-            : new URL(input.url)
-      } catch {
-        throw new AppAuthorizationError(AuthErrorCode.requestNotAllowed)
-      }
-      if (
-        url.origin !== config.apiOrigin ||
-        url.username !== '' ||
-        url.password !== '' ||
-        url.protocol !== new URL(config.apiOrigin).protocol ||
-        reservedPaths.has(url.pathname.toLowerCase().replace(/\/$/u, ''))
-      ) {
-        throw new AppAuthorizationError(AuthErrorCode.requestNotAllowed)
-      }
+      const target = resourceFetchTarget(input, config.apiOrigin, reservedPaths)
       const inputHeaders = input instanceof Request ? input.headers : undefined
       const headers = new Headers(inputHeaders)
       if (init.headers) {
@@ -482,7 +465,6 @@ export const createAuthRuntimeWithDependencies = (
       headers.set('authorization', `Bearer ${stored.accessToken}`)
       let response: Response
       try {
-        const target = input instanceof Request ? input : url.toString()
         response = await fetch(target, { ...init, headers, credentials: 'omit', redirect: 'error' })
       } catch {
         throw new AppAuthorizationError(AuthErrorCode.networkUnavailable)

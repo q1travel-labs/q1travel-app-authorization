@@ -39,6 +39,22 @@ describe('authorization configuration', () => {
       .toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
   })
 
+  it.each(['authOrigin', 'apiOrigin'] as const)('rejects equivalent hosts for %s', (field) => {
+    for (const host of ['api.example.test', 'api.example.test.', 'API.EXAMPLE.TEST', 'api.example.test:443']) {
+      expect(() => resolveAuthConfig({
+        ...authConfig, authOrigin: 'https://api.example.test', apiOrigin: 'https://api.example.test',
+        [field]: 'https://' + host,
+      })).toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
+    }
+    expect(() => resolveAuthConfig({ ...authConfig, [field]: 'https://distinct.example.test.' }))
+      .toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
+  })
+
+  it('rejects a trailing dot on the registered web callback host', () => {
+    expect(() => resolveAuthConfig({ ...authConfig, redirectUri: 'https://web.example.test./callback' }, true))
+      .toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
+  })
+
   it.each(['', '/'])('normalizes root pathPrefix %j to unprefixed endpoints', (pathPrefix) => {
     expect(resolveAuthConfig({ ...authConfig, pathPrefix })).toMatchObject({
       contextsUrl: 'http://localhost:3012/app-authorizations/v1/contexts',
@@ -53,6 +69,9 @@ describe('authorization configuration', () => {
     'api',
     '/api/',
     '/api/../admin',
+    '/./api',
+    '/api/./admin',
+    '/api/.',
     '/api?debug=true',
     '/api#debug',
   ])('still rejects unsafe pathPrefix %j', (pathPrefix) => {

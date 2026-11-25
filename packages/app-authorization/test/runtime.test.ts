@@ -136,6 +136,57 @@ describe('background auth runtime', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
+  it('rejects ambiguous resource paths before looking up a session', async () => {
+    const { chrome } = createChromePort()
+    const fetch = vi.fn()
+    const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch })
+    const denied = { code: 'request_not_allowed' }
+    for (const action of ['authorize', 'token', 'revoke', 'session', 'contexts']) {
+      for (const prefix of ['', '/API']) {
+        const route = prefix + '/app-authorizations/v1/'
+        const encodedInitial = '%' + action.charCodeAt(0).toString(16) + action.slice(1)
+        for (const path of [route + encodedInitial, route + action + '///', route + action + '%2f',
+          route.replaceAll('/', '//') + action.toUpperCase()]) {
+          await expect(runtime.authorizedFetch(config.apiOrigin + path)).rejects.toMatchObject(denied)
+        }
+      }
+    }
+    for (const path of ['/orders%2fopen', '/orders%5Copen', '/orders\\open', '/orders/%2e/active',
+      '/orders/.%2E/active', '/orders/%2e./active', '/orders/%', '/orders/%FE', '/orders/%252Fopen']) {
+      await expect(runtime.authorizedFetch(config.apiOrigin + path)).rejects.toMatchObject(denied)
+    }
+    for (const address of ['/orders', '//api.example.com/orders', 'https://user@api.example.com/orders']) {
+      await expect(runtime.authorizedFetch(address)).rejects.toMatchObject(denied)
+    }
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('reads the native Request URL and preserves a business POST', async () => {
+    const { chrome, storage } = createChromePort()
+    storage.values[SESSION_STORAGE_KEY] = {
+      accessToken: token, tokenType: 'Bearer', expiresAt: new Date(50_000).toISOString(), scopes: config.scopes,
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const sent = new Request(input, init)
+      expect(sent.url).toBe(address)
+      expect(sent.method).toBe('POST')
+      expect(await sent.text()).toBe('two items')
+      expect(sent.headers.get('authorization')).toBe('Bearer ' + token)
+      return new Response(null, { status: 204 })
+    })
+    const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch, now: () => 1_000 })
+    const address = config.apiOrigin + '/orders/item%2Ejson/100%25?q=%2F'
+    const request = new Request(address, { method: 'POST', body: 'two items' })
+    Object.defineProperty(request, 'url', { get() { throw new Error('shadowed property') } })
+    await expect(runtime.authorizedFetch(request)).resolves.toMatchObject({ status: 204 })
+    expect(fetch).toHaveBeenCalledOnce()
+    delete storage.values[SESSION_STORAGE_KEY]
+    const outside = new Request(config.authOrigin + '/orders')
+    Object.defineProperty(outside, 'url', { value: address })
+    await expect(runtime.authorizedFetch(outside)).rejects.toMatchObject({ code: 'request_not_allowed' })
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
   it('uses the validated URL snapshot when the caller mutates a URL object', async () => {
     const { chrome, storage } = createChromePort()
     storage.values[SESSION_STORAGE_KEY] = {

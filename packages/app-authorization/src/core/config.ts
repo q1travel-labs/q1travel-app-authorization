@@ -30,11 +30,14 @@ const invalidConfiguration = (): never => {
 }
 
 const parseUrl = (value: string): URL => {
+  let url: URL
   try {
-    return new URL(value)
+    url = new URL(value)
   } catch {
     return invalidConfiguration()
   }
+  if (url.hostname.endsWith('.')) return invalidConfiguration()
+  return url
 }
 
 const requireOrigin = (value: string, allowInsecureLoopback: boolean): string => {
