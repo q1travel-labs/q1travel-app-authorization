@@ -3,7 +3,7 @@ import { createAuthRuntimeWithDependencies } from '../src/extension/runtime.js'
 import { SESSION_STORAGE_KEY } from '../src/extension/storage.js'
 import { createChromePort, jsonResponse } from './helpers/fakes.js'
 
-const config = { clientId: 'client', redirectUri: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/callback', scopes: ['orders:read'], apiOrigin: 'https://api.example.test' }
+const config = { clientId: 'client', redirectUri: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/callback', scopes: ['orders:read'], authOrigin: 'https://connect.example.test', apiOrigin: 'https://api.example.test' }
 const contextToken = 'a'.repeat(42) + 'A'
 const transactionKey = 'q1travel.appAuthorization.transaction.v2'
 const harness = (failure?: 'beforeExchange' | 'beforeSessionCommit') => {
@@ -29,7 +29,7 @@ describe('optional backend authorization context', () => {
     const h = harness()
     await expect(h.create().login()).resolves.toMatchObject({ status: 'authenticated' })
     const url = new URL(h.launch.mock.calls[0][0])
-    expect(h.prepare).toHaveBeenCalledWith({ clientId: config.clientId, redirectUri: config.redirectUri, state: url.searchParams.get('state'), codeChallenge: url.searchParams.get('code_challenge') })
+    expect(h.prepare).toHaveBeenCalledWith({ contextsUrl: 'https://connect.example.test/api/app-authorizations/v1/contexts', clientId: config.clientId, redirectUri: config.redirectUri, state: url.searchParams.get('state'), codeChallenge: url.searchParams.get('code_challenge') })
     expect(h.assertCurrent.mock.calls).toEqual([[{ token: contextToken, phase: 'beforeExchange' }], [{ token: contextToken, phase: 'beforeSessionCommit' }]])
     expect(new URLSearchParams(String(h.fetch.mock.calls[0][1]?.body)).has('authorization_context')).toBe(false)
     expect(h.storage.values[transactionKey]).toBeUndefined()

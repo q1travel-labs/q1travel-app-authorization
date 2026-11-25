@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — Breaking
+
+- Configure both `authOrigin` and `apiOrigin` in each environment. Configurations with only the former shared `apiOrigin`, or with the same origin for both roles, fail initialization.
+- For production, set `authOrigin` to `https://connect.q1lx.com`, `apiOrigin` to `https://api.q1lx.com` and `pathPrefix` to `''`. Store-bound clients POST to the `contextsUrl` supplied to `AuthorizationContextPort.prepare`.
+- Permit both hosts in extension host permissions and CSP `connect-src`. Adjacent-tab clients must register the exact Web `redirectUri` and allow the callback origin in `externally_connectable`. Ozon uses `https://dashboard.q1lx.com/oauth-callback.html`.
+- Background resource requests reject the five public protocol paths on the API host. Credential-bearing fetches reject redirects.
+
 ## 0.3.0 — 2026-10-10
 
 - Add an optional background authorization context port. Bind opaque context to PKCE, persist opt-in pending flows under v2 keys, and check context before exchange and session commit; compensate acquired tokens when commit fails.

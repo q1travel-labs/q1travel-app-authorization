@@ -19,6 +19,7 @@ const config = {
   clientId: 'extension-client',
   redirectUri,
   scopes: ['orders:read'],
+  authOrigin: 'https://connect.example.com',
   apiOrigin: 'https://api.example.com',
   pathPrefix: '/api',
 } as const
@@ -109,9 +110,19 @@ describe('background auth runtime', () => {
     const fetch = vi.fn()
     const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch, now: () => 1_000 })
 
-    await expect(
-      runtime.authorizedFetch('https://outside.example.com/orders'),
-    ).rejects.toMatchObject({ code: 'request_not_allowed' })
+    for (const origin of [config.authOrigin, 'https://outside.example.com']) {
+      await expect(runtime.authorizedFetch(origin + '/orders'))
+        .rejects.toMatchObject({ code: 'request_not_allowed' })
+    }
+    for (const action of ['authorize', 'token', 'revoke', 'session', 'contexts']) {
+      for (const prefix of ['', config.pathPrefix]) {
+        const path = prefix + '/app-authorizations/v1/' + action
+        for (const target of [path, path.toUpperCase() + '/?q=1']) {
+          await expect(runtime.authorizedFetch(config.apiOrigin + target))
+            .rejects.toMatchObject({ code: 'request_not_allowed' })
+        }
+      }
+    }
     await expect(
       runtime.authorizedFetch('https://api.example.com/orders', {
         headers: { Authorization: 'Bearer caller-token' },

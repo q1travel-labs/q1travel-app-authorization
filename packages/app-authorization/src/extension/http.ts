@@ -51,7 +51,7 @@ const request = async (
   init: RequestInit,
 ): Promise<Response> => {
   try {
-    return await fetch(input, init)
+    return await fetch(input, { ...init, redirect: 'error' })
   } catch {
     throw new AppAuthorizationError(AuthErrorCode.networkUnavailable)
   }

@@ -302,7 +302,7 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
       const prepared = await createAuthorizationRequest(config, options.crypto ?? browserCryptoPort())
       assertCurrentGeneration()
       const contextToken = options.authorizationContextPort ? await bounded(prepareAuthorizationContext(options.authorizationContextPort, {
-        clientId: config.clientId, redirectUri: config.redirectUri, state: prepared.state,
+        contextsUrl: config.contextsUrl, clientId: config.clientId, redirectUri: config.redirectUri, state: prepared.state,
         codeChallenge: prepared.codeChallenge, sourceTabId: source.id,
       }), expiresAt) : undefined
       assertCurrentGeneration()

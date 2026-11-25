@@ -23,8 +23,9 @@ export const auth = createAuthRuntime({
   clientId: 'registered-extension-client',
   redirectUri: chrome.identity.getRedirectURL('authorization-callback'),
   scopes: ['orders:read'],
-  apiOrigin: 'https://api.example.com',
-  pathPrefix: '/api',
+  authOrigin: 'https://connect.q1lx.com',
+  apiOrigin: 'https://api.q1lx.com',
+  pathPrefix: '',
 })
 
 try {
@@ -87,13 +88,16 @@ export function Root() {
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `clientId` | yes | Registered public client identifier. |
-| `redirectUri` | yes | Exact `https://<extension-id>.chromiumapp.org/<path>` callback. |
+| `redirectUri` | yes | Exact registered callback URL. Use the Chromium identity URL for the identity flow or the registered Web page for the adjacent-tab flow. |
 | `scopes` | yes | Non-empty unique scope identifiers. |
-| `apiOrigin` | yes | Exact API origin allowed by `authorizedFetch`. |
-| `pathPrefix` | no | API route prefix; defaults to `/api`. Use `''` or `'/'` for no prefix. |
+| `authOrigin` | yes | Origin serving authorize, token, revoke, session and contexts. |
+| `apiOrigin` | yes | Resource origin allowed by `authorizedFetch`. Must differ from `authOrigin`. |
+| `pathPrefix` | no | Protocol route prefix, default `/api`. Set `''` for the registered production routes. |
 | `allowInsecureLoopback` | no | Allows explicit HTTP loopback origins for local tests only. |
 
-The fixed authorization endpoints are `<apiOrigin><pathPrefix>/app-authorizations/v1/{authorize,token,revoke,session}`. Empty and root prefixes both normalize to `<apiOrigin>/app-authorizations/v1/*`; other prefixes must start with `/`, cannot contain `..`, a query, or a fragment, and cannot end in `/`. Invalid or incomplete configuration fails closed.
+Both origins must be explicit, canonical HTTPS origins such as `https://connect.q1lx.com` and `https://api.q1lx.com`, without a trailing slash. HTTP on localhost or 127.0.0.1 requires `allowInsecureLoopback: true`. Missing, identical or invalid origins fail initialization with `configuration_invalid`.
+
+The SDK builds all five protocol URLs under `<authOrigin><pathPrefix>/app-authorizations/v1/`. Empty and root prefixes select the registered paths directly. Other prefixes start with a slash and contain only path segments. For a 0.3.0 migration, set both origins in every environment and point the context port at the supplied `contextsUrl`. An old configuration supplying only `apiOrigin` fails at startup.
 
 ## Background API
 
@@ -103,7 +107,7 @@ The fixed authorization endpoints are `<apiOrigin><pathPrefix>/app-authorization
 - `getSession()` returns only status, expiry, and scopes.
 - `verifySession()` checks the server session and clears revoked credentials.
 - `onSessionChange(callback)` subscribes to token-free session metadata.
-- `authorizedFetch(input, init)` allows only `apiOrigin`, rejects caller authorization headers, forces `credentials: 'omit'`, and clears matching credentials after `401` or `invalid_token`.
+- `authorizedFetch(input, init)` sends the bearer only to resource URLs on `apiOrigin`, rejects the five protocol paths and caller authorization headers, forces `credentials: 'omit'` and `redirect: 'error'`, and clears matching credentials after `401` or `invalid_token`.
 
 ## Error codes
 
@@ -119,6 +123,7 @@ Errors never retain callback URLs, authorization codes, PKCE verifiers, or acces
 - Chrome exposes no service-worker-only session-storage access level. `TRUSTED_CONTEXTS` blocks content scripts and web pages, but extension-owned pages and the service worker remain one trust domain and can read session storage.
 - SDK UI messages contain only session metadata and stable errors; tokens never reach content scripts, web pages, or those messages.
 - Sessions expire locally after the server-issued fixed eight-hour lifetime; there is no refresh token or replay.
+- Token exchange, revocation and session verification use fetch with redirects disabled. Session verification sends the protocol bearer header and revocation sends the token in the form body.
 - Authorization callback origin and path must exactly match `redirectUri`; `state` must match the active transaction.
 - `authorizedFetch` never accepts a cross-origin target or a caller-supplied `Authorization` header.
 - Applications keep business API message allowlists and authorization-dependent cleanup in their own background code.
@@ -136,6 +141,14 @@ The background entry also exports `createAdjacentTabAuthRuntime` and
 level so Chrome can register its wake-up listeners:
 
 ```ts
+const config = {
+  clientId: 'q1travel-ozon-manager-v2',
+  redirectUri: 'https://dashboard.q1lx.com/oauth-callback.html',
+  scopes: ['pricing:preview'],
+  authOrigin: 'https://connect.q1lx.com',
+  apiOrigin: 'https://api.q1lx.com',
+  pathPrefix: '',
+}
 const runtime = createAdjacentTabAuthRuntime(config, {
   chrome,
   getSourceTab: async () => {
@@ -150,8 +163,11 @@ await runtime.ready()
 Use the normal UI facade. An explicit login opens a blank tab in the source
 window at `source.index + 1`, records ownership and PKCE state in
 `chrome.storage.session`, then navigates to the authorization endpoint. Declare
-`alarms` and an `externally_connectable.matches` entry restricted to the trusted
-callback origin/path. The callback must be an exact registered HTTPS URL without
+`alarms`. Include `https://connect.q1lx.com/*` and `https://api.q1lx.com/*` in
+`host_permissions`, and both HTTPS origins in the extension page CSP's
+`connect-src`. For the registered Ozon Web callback, use
+`https://dashboard.q1lx.com/*` in `externally_connectable.matches` and set
+`redirectUri` to the exact callback page shown above. The callback must be an exact registered HTTPS URL without
 query or fragment. HTTP localhost/127.0.0.1 callbacks require
 `allowInsecureLoopback: true`; this is for local development only.
 
@@ -163,8 +179,8 @@ registered extension ID:
 { type: 'q1travel.appAuthorization.callback.v1', callbackUrl }
 ```
 
-Only a top-frame Web sender whose origin and cleaned URL exactly match the
-configured callback and whose tab ID matches the persisted owned tab is
+Only a top-frame Web sender whose Chrome-reported origin matches `redirectUri` and whose
+sender URL matches the callback URL in the message and whose tab ID matches the persisted owned tab is
 accepted. State and callback shape are checked before SDK token exchange. The
 response is `{ ok: true }` or `{ ok: false, error: { code, message, retryable } }`;
 it carries no token or session. Web owns no PKCE verifier or token exchange.
@@ -183,7 +199,7 @@ Real-browser acceptance must separately verify external callback delivery,
 worker suspension/restart, exact adjacent placement and focused-window behavior.
 Unit tests and packing alone do not establish that acceptance.
 
-## Optional background authorization context (unreleased)
+## Optional background authorization context
 
 Both background runtimes accept `authorizationContextPort?: AuthorizationContextPort`.
 Import this type and `AuthorizationSourceMetadata` from the background subpath.
@@ -192,7 +208,7 @@ The consumer implements:
 ```ts
 interface AuthorizationContextPort {
   prepare(input: {
-    clientId: string; redirectUri: string; state: string; codeChallenge: string;
+    contextsUrl: string; clientId: string; redirectUri: string; state: string; codeChallenge: string;
     sourceTabId?: number;
   }): Promise<{ token: string }>;
   assertCurrent(input: {
@@ -200,6 +216,12 @@ interface AuthorizationContextPort {
   }): Promise<void>;
 }
 ```
+
+For a store-bound login, the background port sends the registered store constraint,
+client ID, redirect URI, state and S256 challenge in a JSON POST to the supplied
+`contextsUrl` on `authOrigin`. Use plain fetch with `credentials: 'omit'`,
+`redirect: 'error'` and no bearer header. The port validates the contexts
+response and returns its opaque authorization context token to the SDK.
 
 `prepare` must return exactly one own field, `token`, containing a canonical
 43-character base64url encoding of 32 bytes. The SDK adds it only to the
@@ -228,5 +250,4 @@ removed. Strict recovery runs the same context checks; if a restarted consumer
 lost its token-to-source association, it must reject rather than reconstruct
 identity from the token. A new strict login does not attach itself to another
 pending authorization. The public facade remains `login()` and its request
-still contains exactly `protocol`, `requestId`, and `action`; public session,
-core configuration, token exchange and session storage shapes are unchanged.
+still contains exactly `protocol`, `requestId`, and `action`; the SDK keeps credential handling in the background runtime.

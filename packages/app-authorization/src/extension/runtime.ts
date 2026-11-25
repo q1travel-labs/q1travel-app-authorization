@@ -1,4 +1,5 @@
 import { assertAuthorizationContext, prepareAuthorizationContext, type AuthorizationContextPort } from './authorizationContextPort.js'
+import { reservedProtocolPaths } from '../core/protocolEndpoints.js'
 import { validateAuthorizationCallback } from '../core/callback.js'
 import {
   browserCryptoPort,
@@ -98,6 +99,7 @@ export const createAuthRuntimeWithDependencies = (
   options: AuthRuntimeDependencies,
 ): AuthRuntime => {
   const config: ResolvedAuthConfig = resolveAuthConfig(inputConfig, options.allowWebRedirect)
+  const reservedPaths = reservedProtocolPaths(config.pathPrefix)
   const chrome = options.chrome
   const fetch = options.fetch
   const crypto = options.crypto ?? browserCryptoPort()
@@ -265,7 +267,7 @@ export const createAuthRuntimeWithDependencies = (
       assertGeneration(expectedGeneration)
       const port = options.authorizationContextPort
       const contextToken = port ? await awaitContext(prepareAuthorizationContext(port, {
-        clientId: config.clientId, redirectUri: config.redirectUri,
+        contextsUrl: config.contextsUrl, clientId: config.clientId, redirectUri: config.redirectUri,
         state: prepared.state, codeChallenge: prepared.codeChallenge,
       }), expectedGeneration) : undefined
       assertGeneration(expectedGeneration)
@@ -461,7 +463,8 @@ export const createAuthRuntimeWithDependencies = (
         url.origin !== config.apiOrigin ||
         url.username !== '' ||
         url.password !== '' ||
-        url.protocol !== new URL(config.apiOrigin).protocol
+        url.protocol !== new URL(config.apiOrigin).protocol ||
+        reservedPaths.has(url.pathname.toLowerCase().replace(/\/$/u, ''))
       ) {
         throw new AppAuthorizationError(AuthErrorCode.requestNotAllowed)
       }
@@ -480,7 +483,7 @@ export const createAuthRuntimeWithDependencies = (
       let response: Response
       try {
         const target = input instanceof Request ? input : url.toString()
-        response = await fetch(target, { ...init, headers, credentials: 'omit' })
+        response = await fetch(target, { ...init, headers, credentials: 'omit', redirect: 'error' })
       } catch {
         throw new AppAuthorizationError(AuthErrorCode.networkUnavailable)
       }

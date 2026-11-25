@@ -13,6 +13,8 @@ const expected = new Set([
   'dist/core/config.js',
   'dist/core/pkce.d.ts',
   'dist/core/pkce.js',
+  'dist/core/protocolEndpoints.d.ts',
+  'dist/core/protocolEndpoints.js',
   'dist/core/types.d.ts',
   'dist/core/types.js',
   'dist/extension/authorizationContextPort.d.ts',

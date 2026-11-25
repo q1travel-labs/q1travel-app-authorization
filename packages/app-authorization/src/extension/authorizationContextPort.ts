@@ -2,6 +2,8 @@ import { AppAuthorizationError, AuthErrorCode } from '../core/types.js'
 
 export interface AuthorizationContextPort {
   prepare(input: {
+    /** POST the resource constraint here without an access token. */
+    readonly contextsUrl: string
     readonly clientId: string
     readonly redirectUri: string
     readonly state: string

@@ -11,6 +11,7 @@ export interface AuthTab {
 
 export interface ExternalCallbackSender {
   readonly id?: string
+  /** Chrome-reported origin of the explicitly registered Web callback. */
   readonly origin?: string
   readonly url?: string
   readonly frameId?: number

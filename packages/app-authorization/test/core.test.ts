@@ -15,17 +15,37 @@ const authConfig = {
   clientId: 'extension-client',
   redirectUri: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/callback',
   scopes: ['orders:read'],
+  authOrigin: 'http://localhost:3012',
   apiOrigin: 'http://127.0.0.1:3011',
   allowInsecureLoopback: true,
 } as const
 
 describe('authorization configuration', () => {
+  it('requires distinct explicit origins for protocol and resource requests', () => {
+    for (const field of ['authOrigin', 'apiOrigin'] as const) {
+      for (const invalid of [undefined, '', 'https://example.test/path', 'https://example.test/',
+        'https://user@example.test', 'https://example.test?q=1', 'https://example.test#x',
+        'ftp://localhost', 'http://outside.test']) {
+        expect(() => resolveAuthConfig({ ...authConfig, [field]: invalid })).toThrowError(
+          expect.objectContaining({ code: 'configuration_invalid' }),
+        )
+      }
+      expect(() => resolveAuthConfig({
+        ...authConfig, authOrigin: 'https://connect.example.test', apiOrigin: 'https://api.example.test',
+        [field]: 'http://localhost:3011', allowInsecureLoopback: false,
+      })).toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
+    }
+    expect(() => resolveAuthConfig({ ...authConfig, authOrigin: authConfig.apiOrigin }))
+      .toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
+  })
+
   it.each(['', '/'])('normalizes root pathPrefix %j to unprefixed endpoints', (pathPrefix) => {
     expect(resolveAuthConfig({ ...authConfig, pathPrefix })).toMatchObject({
-      authorizeUrl: 'http://127.0.0.1:3011/app-authorizations/v1/authorize',
-      tokenUrl: 'http://127.0.0.1:3011/app-authorizations/v1/token',
-      revokeUrl: 'http://127.0.0.1:3011/app-authorizations/v1/revoke',
-      sessionUrl: 'http://127.0.0.1:3011/app-authorizations/v1/session',
+      contextsUrl: 'http://localhost:3012/app-authorizations/v1/contexts',
+      authorizeUrl: 'http://localhost:3012/app-authorizations/v1/authorize',
+      tokenUrl: 'http://localhost:3012/app-authorizations/v1/token',
+      revokeUrl: 'http://localhost:3012/app-authorizations/v1/revoke',
+      sessionUrl: 'http://localhost:3012/app-authorizations/v1/session',
     })
   })
 

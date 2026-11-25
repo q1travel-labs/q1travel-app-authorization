@@ -6,7 +6,7 @@ import type { AuthTab, ExternalCallbackListener } from '../src/extension/tabAuth
 import { createChromePort, jsonResponse, MemorySessionStorage } from './helpers/fakes.js'
 
 const redirectUri = 'https://web.example.test/oauth-callback.html'
-const config = { clientId: 'client-v2', redirectUri, scopes: ['orders:read'], apiOrigin: 'https://api.example.test' }
+const config = { clientId: 'client-v2', redirectUri, scopes: ['orders:read'], authOrigin: 'https://connect.example.test', apiOrigin: 'https://api.example.test' }
 const key = 'q1travel.appAuthorization.tabTransaction.v1'
 const alarmName = 'q1travel.appAuthorization.tabTimeout.v1'
 const token = 't'.repeat(43)
