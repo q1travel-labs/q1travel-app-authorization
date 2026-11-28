@@ -140,6 +140,7 @@ export function createAuthRuntimeWithDependencies(input: AuthConfig, options: Au
   const settled = startup.catch(() => undefined)
   async function login(signal: AbortSignal) {
     await settled
+    check(signal)
     await sessions.logout()
     check(signal)
     const prepared = await createAuthorizationRequest(config, options.crypto ?? browserCryptoPort())

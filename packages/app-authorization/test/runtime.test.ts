@@ -91,6 +91,20 @@ describe('后台会话', () => {
     expect(JSON.stringify(h.sentMessages)).not.toMatch(/access-[01]|refresh-[01]|"jwk"|code_verifier/)
   })
 
+  it('Given 等待锁期间 AT 到期 / When 取得锁 / Then 以锁内时钟判断并轮换', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    h.fetch.mockClear()
+    const acquire = h.request.getMockImplementation()!
+    h.request.mockImplementationOnce((name, callback) => {
+      h.setTime(74_000)
+      return acquire(name, callback)
+    })
+    expect(await worker.restore()).toMatchObject({ expiresAt: '1970-01-01T00:02:27.000Z' })
+    expect(h.fetch).toHaveBeenCalledOnce()
+  })
+
   it('Given 两个独立 runtime / When 同代并发刷新 / Then 锁内重读版本并返回同一轮换结果', async () => {
     const h = harness()
     const a = h.create()
@@ -228,6 +242,48 @@ describe('后台会话', () => {
     expect((await worker.authorizedFetch(business)).status).toBe(401)
     expect(publish).toHaveBeenCalledExactlyOnceWith(signedOut)
     expect(await worker.restore()).toEqual(signedOut)
+  })
+
+  it('Given 旧身份查询晚于重新登录 / When 收到旧 AT 失效响应 / Then 保留新一代', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    let release!: (response: Response) => void
+    h.fetch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const old = worker.getIdentity()
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    await worker.logout()
+    const next = await worker.login()
+    const version = (await h.repository.read())?.version
+    release(jsonResponse({ error: { code: 'invalid_token' } }, 401))
+    expect(await old).toEqual(next)
+    expect((await h.repository.read())?.version).toBe(version)
+  })
+
+  it('Given 后台重启遇到暂时断网 / When 首次远端复核失败 / Then 保留落盘身份以供恢复', async () => {
+    const h = harness()
+    const previous = await h.create().login()
+    h.fetch.mockRejectedValueOnce(new Error('offline'))
+    const worker = h.create({ verifyOnStartup: true })
+    await expect(worker.ready()).rejects.toMatchObject({ code: 'network_unavailable' })
+    expect(await worker.restore()).toEqual(previous)
+    expect(await worker.getIdentity()).toEqual(previous)
+  })
+
+  it('Given 服务端错误正文带有敏感内容 / When 页面发起登录 / Then 日志与消息都不携带凭据', async () => {
+    const h = harness()
+    const loggers = (['log', 'warn', 'error', 'info', 'debug'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => {}))
+    const secret = 'fixture-private-server-detail'
+    h.fetch.mockResolvedValueOnce(jsonResponse({ error: 'invalid_grant', error_description: secret }, 400))
+    installRuntime(h.create(), h.chrome)
+    const ui = createAuthFacadeWithDependencies({ chrome: h.chrome })
+    const error = await ui.login().catch((reason: unknown) => reason)
+    expect(error).toMatchObject({ code: 'oauth_invalid_grant' })
+    const visible = JSON.stringify([error, String(error), h.sentMessages, loggers.map((logger) => logger.mock.calls)])
+    expect(visible).not.toContain(secret)
+    expect(visible).not.toContain('code_verifier')
+    expect(visible).not.toContain('issued-code')
+    for (const logger of loggers) expect(logger).not.toHaveBeenCalled()
   })
 
   it('Given 资源输入 / When 地址或头超出授权范围 / Then 在读取存储前拒绝', async () => {

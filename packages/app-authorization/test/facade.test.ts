@@ -94,6 +94,21 @@ describe('extension UI facade', () => {
     expect(callback).not.toHaveBeenCalled()
   })
 
+  it('Given 内容脚本消息 / When 请求登录、刷新或任意 URL / Then 后台忽略且不出网', () => {
+    const { chrome, listeners } = createChromePort()
+    const fetch = vi.fn()
+    installRuntime(createAuthRuntimeWithDependencies(config, { ...browserPorts(), chrome, fetch }), chrome)
+    const sender = { id: chrome.runtime.id, tab: { id: 8 }, url: 'https://example.test/item', origin: 'https://example.test' }
+    const reply = vi.fn()
+    for (const action of ['login', 'restore', 'refresh', 'logout', 'getIdentity', 'authorizedFetch']) {
+      for (const listener of listeners) {
+        expect(listener({ protocol: 'q1travel.app-authorization.v1', requestId: 'one', action }, sender, reply)).toBeUndefined()
+      }
+    }
+    expect(reply).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('accepts requests from an extension options page opened in a tab', async () => {
     const { chrome, listeners } = createChromePort()
     const runtime = {

@@ -54,8 +54,9 @@ export function createSessions(repository: SessionRepository, locks: LockManager
     const renew = force || 'rotating' in observed || Date.parse(observed.expiresAt) <= now()
     const operation = locked(async () => {
       const latest = await usable(await repository.read())
-      if (!latest || latest.version !== observed.version || !renew) return latest
-      return rotate(latest)
+      if (!latest) return undefined
+      if (Date.parse(latest.expiresAt) <= now() || (force && latest.version === observed.version)) return rotate(latest)
+      return latest
     })
     if (!renew) return operation
     renewals.set(observed.version, operation)
