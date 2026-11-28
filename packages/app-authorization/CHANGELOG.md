@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 — 2026-11-28
+
+- 四款扩展同日切换至公开 OAuth 授权码、PKCE S256 与 REST DPoP。新增必填登记字段 `installationId`，支持空业务 scope，回调校验 issuer、state 及精确地址。
+- 冻结页面与后台的 `login`、`restore`、`refresh`、`logout`、`getIdentity`，以及 `./fixtures/errors.json`。相邻页签回调消息携带 `clientId`、`extensionId` 和 `callbackUrl`。
+- 后台在扩展源 IndexedDB 持久化不可导出的 P-256 密钥与令牌。Web Locks 串行刷新，先领用当前 RT，再原子保存轮换结果。读取实际 `expires_in`，退出时提交当前 RT 撤整族。
+- 移除旧授权路由、Bearer 会话和 `pathPrefix`。更新扩展后需重新登录。
+
 ## 0.4.0 — Breaking
 
 - Configure both `authOrigin` and `apiOrigin` in each environment. Configurations with only the former shared `apiOrigin`, or with the same origin for both roles, fail initialization.

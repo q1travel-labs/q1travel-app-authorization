@@ -1,6 +1,6 @@
 {
   "name": "@q1travel/app-authorization",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Unified authorization runtime for browser extensions",
   "repository": {
     "type": "git",
@@ -10,10 +10,12 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "fixtures/errors.json",
     "README.md",
     "CHANGELOG.md"
   ],
   "exports": {
+    "./fixtures/errors.json": "./fixtures/errors.json",
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -57,6 +59,7 @@
   "devDependencies": {
     "@types/react": "^18.3.31",
     "@types/react-test-renderer": "^18.3.1",
+    "fake-indexeddb": "6.2.4",
     "react": "18.3.1",
     "react-test-renderer": "^18.3.1"
   }

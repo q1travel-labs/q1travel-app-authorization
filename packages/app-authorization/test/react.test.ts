@@ -1,3 +1,4 @@
+import { identity } from './helpers/oauth.js'
 import { createElement } from 'react'
 import { act, create } from 'react-test-renderer'
 import { describe, expect, it } from 'vitest'
@@ -8,7 +9,7 @@ describe('AuthGate', () => {
   it('renders loading and then authenticated children', async () => {
     let resolve!: (session: AuthSession) => void
     const client = {
-      verifySession: () => new Promise<AuthSession>((done) => { resolve = done }),
+      getIdentity: () => new Promise<AuthSession>((done) => { resolve = done }),
       onSessionChange: () => () => undefined,
     }
     let renderer: ReturnType<typeof create>
@@ -26,7 +27,7 @@ describe('AuthGate', () => {
       resolve({
         status: 'authenticated',
         expiresAt: '2026-09-20T08:00:00.000Z',
-        scopes: ['orders:read'],
+        identity,
       })
     })
     expect(renderer!.toJSON()).toMatchObject({ type: 'main', children: ['application'] })
@@ -34,7 +35,7 @@ describe('AuthGate', () => {
 
   it('renders the supplied signed-out view without product copy', async () => {
     const client = {
-      verifySession: async () => ({ status: 'signed-out' } as const),
+      getIdentity: async () => ({ status: 'signed-out' } as const),
       onSessionChange: () => () => undefined,
     }
     let renderer: ReturnType<typeof create>
@@ -53,7 +54,7 @@ describe('AuthGate', () => {
     let resolveInitial!: (session: AuthSession) => void
     let publish!: (session: AuthSession) => void
     const client = {
-      verifySession: () => new Promise<AuthSession>((resolve) => { resolveInitial = resolve }),
+      getIdentity: () => new Promise<AuthSession>((resolve) => { resolveInitial = resolve }),
       onSessionChange: (callback: (session: AuthSession) => void) => {
         publish = callback
         return () => undefined
@@ -72,7 +73,7 @@ describe('AuthGate', () => {
     await act(async () => resolveInitial({
       status: 'authenticated',
       expiresAt: '2026-09-20T08:00:00.000Z',
-      scopes: ['orders:read'],
+      identity,
     }))
 
     expect(renderer!.toJSON()).toMatchObject({

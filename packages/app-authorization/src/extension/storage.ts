@@ -1,17 +1,6 @@
+import type { ResolvedAuthConfig } from '../core/config.js'
+import type { AuthIdentity } from '../core/types.js'
 import { AppAuthorizationError, AuthErrorCode } from '../core/types.js'
-import { isAuthorizationContextToken } from './authorizationContextPort.js'
-import type { SessionStoragePort } from './ports.js'
-
-export const SESSION_STORAGE_KEY = 'q1travel.appAuthorization.session.v1'
-export const CONTEXT_TRANSACTION_STORAGE_KEY = 'q1travel.appAuthorization.transaction.v2'
-export const TRANSACTION_STORAGE_KEY = 'q1travel.appAuthorization.transaction.v1'
-
-export interface StoredSession {
-  readonly accessToken: string
-  readonly tokenType: 'Bearer'
-  readonly expiresAt: string
-  readonly scopes: readonly string[]
-}
 
 export interface StoredTransaction {
   readonly state: string
@@ -19,105 +8,55 @@ export interface StoredTransaction {
   readonly authorizationContextToken?: string
 }
 
-const OPAQUE_PATTERN = /^[A-Za-z0-9_-]{43}$/u
-const SCOPE_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/u
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-const hasExactKeys = (value: Record<string, unknown>, expected: readonly string[]) => {
-  const keys = Object.keys(value)
-  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key))
+export interface TokenGrant {
+  readonly accessToken: string
+  readonly refreshToken: string
+  readonly expiresAt: string
+  readonly scopes: readonly string[]
 }
 
-const isStoredSession = (value: unknown): value is StoredSession => {
-  if (!isRecord(value) || !hasExactKeys(value, ['accessToken', 'tokenType', 'expiresAt', 'scopes'])) {
-    return false
-  }
-  if (
-    typeof value.accessToken !== 'string' ||
-    !OPAQUE_PATTERN.test(value.accessToken) ||
-    value.tokenType !== 'Bearer' ||
-    typeof value.expiresAt !== 'string' ||
-    !Array.isArray(value.scopes) ||
-    value.scopes.some((scope) => typeof scope !== 'string' || !SCOPE_PATTERN.test(scope))
-  ) {
-    return false
-  }
-  const expiresAt = Date.parse(value.expiresAt)
-  return Number.isFinite(expiresAt) && new Date(expiresAt).toISOString() === value.expiresAt
+export interface StoredSession extends TokenGrant {
+  readonly key: CryptoKeyPair
+  readonly version: string
+  readonly identity: AuthIdentity
+}
+
+export type SessionRecord = StoredSession | { readonly rotating: true; readonly version: string }
+const unavailable = () => new AppAuthorizationError(AuthErrorCode.storageUnavailable)
+
+export function sessionNamespace(config: Pick<ResolvedAuthConfig, 'tokenUrl' | 'identityUrl' | 'clientId' | 'redirectUri' | 'scopes'>) {
+  return JSON.stringify([config.tokenUrl, config.identityUrl, config.clientId, config.redirectUri, [...config.scopes].sort()])
 }
 
 export class SessionRepository {
-  readonly ready: Promise<void>
+  constructor(readonly name: string, private readonly database: IDBFactory) {}
 
-  constructor(private readonly storage: SessionStoragePort) {
-    this.ready = storage
-      .setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
-      .catch(() => { throw new AppAuthorizationError(AuthErrorCode.storageUnavailable) })
+  private async transaction<T>(mode: IDBTransactionMode, operation: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+    try {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const open = this.database.open('q1travel.oauth', 1)
+        open.onupgradeneeded = () => open.result.createObjectStore('sessions')
+        open.onsuccess = () => resolve(open.result)
+        open.onerror = () => reject(unavailable())
+      })
+      try {
+        return await new Promise<T>((resolve, reject) => {
+          const tx = db.transaction('sessions', mode, { durability: 'strict' })
+          tx.onabort = () => reject(unavailable())
+          const request = operation(tx.objectStore('sessions'))
+          tx.oncomplete = () => resolve(request.result)
+        })
+      } finally { db.close() }
+    } catch { throw unavailable() }
   }
 
-  async read(): Promise<StoredSession | null> {
-    await this.ready
-    try {
-      const value = (await this.storage.get(SESSION_STORAGE_KEY))[SESSION_STORAGE_KEY]
-      if (value === undefined) return null
-      if (!isStoredSession(value)) {
-        await this.storage.remove(SESSION_STORAGE_KEY)
-        return null
-      }
-      return structuredClone(value)
-    } catch {
-      throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
+  read(): Promise<SessionRecord | undefined> {
+    return this.transaction('readonly', (store) => store.get(this.name))
   }
-}
-  async write(session: StoredSession): Promise<void> {
-    await this.ready
-    try {
-      await this.storage.set({ [SESSION_STORAGE_KEY]: structuredClone(session) })
-    } catch {
-      throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
-    }
+  write(record: SessionRecord): Promise<IDBValidKey> {
+    return this.transaction('readwrite', (store) => store.put(record, this.name))
   }
-
-  async writeTransaction(transaction: StoredTransaction): Promise<void> {
-    await this.ready
-    try {
-      const contextual = transaction.authorizationContextToken !== undefined
-      const expected = contextual ? ['state', 'codeVerifier', 'authorizationContextToken'] : ['state', 'codeVerifier']
-      if (!hasExactKeys(transaction as unknown as Record<string, unknown>, expected) ||
-        !OPAQUE_PATTERN.test(transaction.state) || !OPAQUE_PATTERN.test(transaction.codeVerifier) ||
-        (contextual && !isAuthorizationContextToken(transaction.authorizationContextToken))) {
-        throw new Error('Invalid transaction.')
-      }
-      await this.storage.set({ [contextual ? CONTEXT_TRANSACTION_STORAGE_KEY : TRANSACTION_STORAGE_KEY]: structuredClone(transaction) })
-    } catch {
-      throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
-    }
-  }
-
-  async clearTransaction(): Promise<void> {
-    await this.ready
-    try {
-      await this.storage.remove([TRANSACTION_STORAGE_KEY, CONTEXT_TRANSACTION_STORAGE_KEY])
-    } catch {
-      throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
-    }
-  }
-
-  async clearSession(): Promise<void> {
-    await this.ready
-    try {
-      await this.storage.remove(SESSION_STORAGE_KEY)
-    } catch {
-      throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
-    }
-  }
-
-  async clear(): Promise<void> {
-    await this.ready
-    try {
-      await this.storage.remove([SESSION_STORAGE_KEY, TRANSACTION_STORAGE_KEY, CONTEXT_TRANSACTION_STORAGE_KEY])
-    } catch {
-      throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
-    }
+  clear(): Promise<undefined> {
+    return this.transaction('readwrite', (store) => store.delete(this.name))
   }
 }

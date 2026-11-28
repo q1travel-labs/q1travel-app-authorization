@@ -1,3 +1,4 @@
+import { parseIdentity } from '../core/identity.js'
 import {
   AppAuthorizationError,
   AuthErrorCode,
@@ -7,7 +8,7 @@ import {
 export const AUTH_PROTOCOL = 'q1travel.app-authorization.v1'
 export const SESSION_CHANGED = 'q1travel.app-authorization.session-changed.v1'
 
-export type AuthAction = 'login' | 'logout' | 'getSession' | 'verifySession'
+export type AuthAction = 'login' | 'logout' | 'restore' | 'refresh' | 'getIdentity'
 
 export interface AuthRequest {
   readonly protocol: typeof AUTH_PROTOCOL
@@ -28,7 +29,7 @@ export const parseRequest = (value: unknown): AuthRequest | null => {
     value.protocol !== AUTH_PROTOCOL ||
     typeof value.requestId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/u.test(value.requestId) ||
-    !['login', 'logout', 'getSession', 'verifySession'].includes(String(value.action))
+    typeof value.action !== 'string' || !['login', 'logout', 'restore', 'refresh', 'getIdentity'].includes(value.action)
   ) return null
   return value as unknown as AuthRequest
 }
@@ -36,19 +37,10 @@ export const parseRequest = (value: unknown): AuthRequest | null => {
 export const parseSession = (value: unknown): AuthSession | null => {
   if (!isRecord(value) || typeof value.status !== 'string') return null
   if (value.status === 'signed-out' && exactKeys(value, ['status'])) return { status: 'signed-out' }
-  if (
-    value.status === 'authenticated' &&
-    exactKeys(value, ['status', 'expiresAt', 'scopes']) &&
-    typeof value.expiresAt === 'string' &&
-    Number.isFinite(Date.parse(value.expiresAt)) &&
-    Array.isArray(value.scopes) &&
-    value.scopes.every((scope) => typeof scope === 'string')
-  ) {
-    return {
-      status: 'authenticated',
-      expiresAt: value.expiresAt,
-      scopes: [...value.scopes],
-    }
+  if (value.status === 'authenticated' && exactKeys(value, ['status', 'expiresAt', 'identity']) &&
+    typeof value.expiresAt === 'string' && Number.isFinite(Date.parse(value.expiresAt))) {
+    const identity = parseIdentity(value.identity)
+    if (identity) return { status: 'authenticated', expiresAt: value.expiresAt, identity }
   }
   return null
 }

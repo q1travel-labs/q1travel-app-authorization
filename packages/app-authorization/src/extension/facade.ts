@@ -12,16 +12,13 @@ import {
 } from './protocol.js'
 import { isTrustedExtensionSender } from './sender.js'
 
-/**
- * Token-free UI message facade. Facade messages never carry credentials.
- * Extension-owned pages still share Chrome's TRUSTED_CONTEXTS storage trust domain with the
- * service worker and can independently read chrome.storage.session when granted that API.
- */
+/** Extension pages receive only validated identity and status messages. */
 export interface AuthFacade {
   login(): Promise<AuthSession>
   logout(): Promise<AuthSession>
-  getSession(): Promise<AuthSession>
-  verifySession(): Promise<AuthSession>
+  refresh(): Promise<AuthSession>
+  restore(): Promise<AuthSession>
+  getIdentity(): Promise<AuthSession>
   onSessionChange(callback: (session: AuthSession) => void): () => void
 }
 
@@ -94,8 +91,9 @@ export const createAuthFacadeWithDependencies = (
   return Object.freeze({
     login: () => request('login'),
     logout: () => request('logout'),
-    getSession: () => request('getSession'),
-    verifySession: () => request('verifySession'),
+    refresh: () => request('refresh'),
+    restore: () => request('restore'),
+    getIdentity: () => request('getIdentity'),
     onSessionChange,
   })
 }

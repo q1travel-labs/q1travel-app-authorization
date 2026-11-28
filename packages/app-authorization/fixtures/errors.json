@@ -1,0 +1,107 @@
+{
+  "invalid_dpop_proof": {
+    "code": "invalid_dpop_proof",
+    "message": "The server rejected the proof of possession.",
+    "retryable": false
+  },
+  "use_dpop_nonce": {
+    "code": "use_dpop_nonce",
+    "message": "The server requires a fresh DPoP nonce.",
+    "retryable": false
+  },
+  "reauthorization_required": {
+    "code": "reauthorization_required",
+    "message": "Sign in again to authorize this installation.",
+    "retryable": false
+  },
+  "configuration_invalid": {
+    "code": "configuration_invalid",
+    "message": "Authorization configuration is invalid.",
+    "retryable": false
+  },
+  "interaction_cancelled": {
+    "code": "interaction_cancelled",
+    "message": "Authorization was cancelled.",
+    "retryable": true
+  },
+  "interaction_failed": {
+    "code": "interaction_failed",
+    "message": "Authorization interaction failed.",
+    "retryable": true
+  },
+  "authorization_denied": {
+    "code": "authorization_denied",
+    "message": "Authorization was denied.",
+    "retryable": true
+  },
+  "invalid_callback": {
+    "code": "invalid_callback",
+    "message": "Authorization callback is invalid.",
+    "retryable": false
+  },
+  "state_mismatch": {
+    "code": "state_mismatch",
+    "message": "Authorization state did not match.",
+    "retryable": false
+  },
+  "network_unavailable": {
+    "code": "network_unavailable",
+    "message": "The network is unavailable.",
+    "retryable": true
+  },
+  "oauth_invalid_request": {
+    "code": "oauth_invalid_request",
+    "message": "The authorization request was rejected.",
+    "retryable": false
+  },
+  "oauth_invalid_grant": {
+    "code": "oauth_invalid_grant",
+    "message": "Sign in again to obtain a new grant.",
+    "retryable": false
+  },
+  "invalid_token": {
+    "code": "invalid_token",
+    "message": "The access token is invalid or expired.",
+    "retryable": true
+  },
+  "server_unavailable": {
+    "code": "server_unavailable",
+    "message": "The authorization service is unavailable.",
+    "retryable": true
+  },
+  "response_invalid": {
+    "code": "response_invalid",
+    "message": "The authorization response is invalid.",
+    "retryable": true
+  },
+  "storage_unavailable": {
+    "code": "storage_unavailable",
+    "message": "Secure session storage is unavailable.",
+    "retryable": true
+  },
+  "session_expired": {
+    "code": "session_expired",
+    "message": "The authorization session expired.",
+    "retryable": true
+  },
+  "forbidden": {
+    "code": "forbidden",
+    "message": "The requested operation is not permitted.",
+    "retryable": false
+  },
+  "revocation_unconfirmed": {
+    "code": "revocation_unconfirmed",
+    "message": "Remote revocation could not be confirmed.",
+    "retryable": true
+  },
+  "request_not_allowed": {
+    "code": "request_not_allowed",
+    "message": "The request target is not allowed.",
+    "retryable": false
+  },
+  "runtime_unavailable": {
+    "code": "runtime_unavailable",
+    "message": "The authorization runtime is unavailable.",
+    "retryable": true
+  }
+}

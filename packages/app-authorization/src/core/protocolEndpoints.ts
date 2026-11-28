@@ -1,16 +1,9 @@
-export const protocolEndpoints = (base: string) => {
-  const prefix = `${base}/app-authorizations/v1`
-  return {
-    authorizeUrl: `${prefix}/authorize`,
-    tokenUrl: `${prefix}/token`,
-    revokeUrl: `${prefix}/revoke`,
-    sessionUrl: `${prefix}/session`,
-    contextsUrl: `${prefix}/contexts`,
-  } as const
-}
-
-// Mirror the API host's case-insensitive check, including optional proxy prefixes.
-export const reservedProtocolPaths = (pathPrefix: string): ReadonlySet<string> => new Set([
-  ...Object.values(protocolEndpoints('')),
-  ...Object.values(protocolEndpoints(pathPrefix.toLowerCase())),
-])
+export const protocolEndpoints = (authOrigin: string, apiOrigin: string) => ({
+  issuer: 'https://connect.q1lx.com',
+  resource: 'https://api.q1lx.com/v1',
+  identityUrl: apiOrigin + '/v1/identity',
+  authorizeUrl: authOrigin + '/oauth/authorize',
+  tokenUrl: authOrigin + '/oauth/token',
+  revokeUrl: authOrigin + '/oauth/revoke',
+  contextsUrl: authOrigin + '/oauth/contexts',
+})

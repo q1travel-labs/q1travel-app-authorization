@@ -15,7 +15,7 @@ import {
 } from '../extension/ui.js'
 
 export interface AuthClient {
-  verifySession(): Promise<AuthSession>
+  getIdentity(): Promise<AuthSession>
   onSessionChange(callback: (session: AuthSession) => void): () => void
 }
 
@@ -37,7 +37,7 @@ export const useAuthSession = (client: AuthClient): AuthSessionState => {
   const refresh = useCallback(async () => {
     const expectedRevision = ++revision.current
     try {
-      const next = await client.verifySession()
+      const next = await client.getIdentity()
       if (revision.current === expectedRevision) {
         setSession(next)
         setError(null)
@@ -58,7 +58,7 @@ export const useAuthSession = (client: AuthClient): AuthSessionState => {
       setError(null)
     })
     const expectedRevision = ++revision.current
-    void client.verifySession().then(
+    void client.getIdentity().then(
       (next) => {
         if (active && revision.current === expectedRevision) setSession(next)
       },

@@ -1,904 +1,342 @@
-import { describe, expect, it, vi } from 'vitest'
-import type { AuthSession } from '../src/core/types.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AppAuthorizationError, AuthErrorCode } from '../src/core/types.js'
 import { createAuthFacadeWithDependencies } from '../src/extension/facade.js'
-import { createAuthRuntime } from '../src/extension/background.js'
-import { createAuthRuntimeWithDependencies } from '../src/extension/runtime.js'
-import {
-  SESSION_STORAGE_KEY,
-  TRANSACTION_STORAGE_KEY,
-} from '../src/extension/storage.js'
-import {
-  MemorySessionStorage,
-  createChromePort,
-  jsonResponse,
-} from './helpers/fakes.js'
+import { installRuntime } from '../src/extension/listener.js'
+import { createAuthRuntimeWithDependencies, type AuthRuntimeDependencies } from '../src/extension/runtime.js'
+import { SessionRepository, type SessionRecord, type StoredSession } from '../src/extension/storage.js'
+import { createChromePort, jsonResponse } from './helpers/fakes.js'
+import { browserPorts, callbackFor, config, grant, identity, inspectFetch } from './helpers/oauth.js'
 
-const redirectUri =
-  'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/callback'
-const config = {
-  clientId: 'extension-client',
-  redirectUri,
-  scopes: ['orders:read'],
-  authOrigin: 'https://connect.example.com',
-  apiOrigin: 'https://api.example.com',
-  pathPrefix: '/api',
-} as const
-const token = 't'.repeat(43)
-
-describe('background auth runtime', () => {
-  it('restricts session storage to trusted extension contexts during initialization', () => {
-    const { chrome, storage } = createChromePort()
-
-    createAuthRuntimeWithDependencies(config, { chrome, fetch: vi.fn() })
-
-    expect(storage.accessLevel).toBe('TRUSTED_CONTEXTS')
-  })
-
-  it('deduplicates concurrent login and exchanges an exact form request', async () => {
-    const { chrome } = createChromePort()
-    let release!: (callback: string) => void
-    const launcher = vi.fn<(authorizationUrl: string) => Promise<string>>(
-      () => new Promise<string>((resolve) => { release = resolve }),
-    )
-    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = new URLSearchParams(String(init?.body))
-      expect(Object.fromEntries(body)).toEqual({
-        grant_type: 'authorization_code',
-        client_id: 'extension-client',
-        code: 'c'.repeat(43),
-        redirect_uri: redirectUri,
-        code_verifier: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
-      })
-      return jsonResponse({
-        access_token: token,
-        token_type: 'Bearer',
-        expires_in: 28_800,
-        scope: 'orders:read',
-      })
-    })
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch,
-      launcher: { launch: launcher },
-      now: () => 1_000,
-    })
-
-    const first = runtime.login()
-    const second = runtime.login()
-    await vi.waitFor(() => expect(launcher).toHaveBeenCalledOnce())
-    const authorizationUrl = new URL(launcher.mock.calls[0][0])
-    release(
-      `${redirectUri}?code=${'c'.repeat(43)}&state=${authorizationUrl.searchParams.get('state')}`,
-    )
-
-    await expect(first).resolves.toEqual({
-      status: 'authenticated',
-      expiresAt: new Date(28_801_000).toISOString(),
-      scopes: ['orders:read'],
-    })
-    await expect(second).resolves.toEqual(await first)
-    expect(fetch).toHaveBeenCalledOnce()
-  })
-
-  it('treats an expired stored token as signed out without sending a request', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(2_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const fetch = vi.fn()
-    const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch, now: () => 2_000 })
-
-    await expect(runtime.getSession()).resolves.toEqual({ status: 'signed-out' })
-    await expect(
-      runtime.authorizedFetch('https://api.example.com/orders'),
-    ).rejects.toMatchObject({ code: 'session_expired' })
-    expect(fetch).not.toHaveBeenCalled()
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
-  })
-
-  it('rejects requests outside apiOrigin and caller Authorization headers', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const fetch = vi.fn()
-    const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch, now: () => 1_000 })
-
-    for (const origin of [config.authOrigin, 'https://outside.example.com']) {
-      await expect(runtime.authorizedFetch(origin + '/orders'))
-        .rejects.toMatchObject({ code: 'request_not_allowed' })
-    }
-    for (const action of ['authorize', 'token', 'revoke', 'session', 'contexts']) {
-      for (const prefix of ['', config.pathPrefix]) {
-        const path = prefix + '/app-authorizations/v1/' + action
-        for (const target of [path, path.toUpperCase() + '/?q=1']) {
-          await expect(runtime.authorizedFetch(config.apiOrigin + target))
-            .rejects.toMatchObject({ code: 'request_not_allowed' })
-        }
+function harness() {
+  const ports = browserPorts()
+  let time = 1_000
+  const chrome = createChromePort()
+  const launch = vi.fn(async (url: string) => callbackFor(url))
+  const consumed = new Set<string>()
+  const issued = new Set<string>()
+  let active = false
+  let generation = 0
+  const tokens = () => {
+    const value = { ...grant, access_token: 'access-' + generation, refresh_token: 'refresh-' + generation }
+    issued.add(value.access_token)
+    return jsonResponse(value)
+  }
+  const invalidToken = () => jsonResponse({ error: { code: 'invalid_token' } }, 401)
+  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input))
+    const body = new URLSearchParams(String(init?.body))
+    if (url.pathname === '/oauth/token') {
+      if (body.get('grant_type') === 'authorization_code') {
+        active = true
+        return tokens()
       }
+      const refresh = body.get('refresh_token')!
+      if (consumed.has(refresh)) active = false
+      if (!active || refresh !== 'refresh-' + generation) return jsonResponse({ error: 'invalid_grant' }, 400)
+      consumed.add(refresh)
+      generation++
+      return tokens()
     }
-    await expect(
-      runtime.authorizedFetch('https://api.example.com/orders', {
-        headers: { Authorization: 'Bearer caller-token' },
-      }),
-    ).rejects.toMatchObject({ code: 'request_not_allowed' })
-    await expect(
-      runtime.authorizedFetch(new Request('https://api.example.com/orders', {
-        headers: { Authorization: 'Bearer request-token' },
-      })),
-    ).rejects.toMatchObject({ code: 'request_not_allowed' })
-    expect(fetch).not.toHaveBeenCalled()
+    if (url.pathname === '/oauth/revoke') {
+      if (body.get('token') === 'refresh-' + generation) active = false
+      return new Response(null)
+    }
+    const authorization = new Headers(init?.headers).get('Authorization')
+    if (!active || !authorization?.startsWith('DPoP ') || !issued.has(authorization.slice(5))) return invalidToken()
+    return jsonResponse(url.pathname === '/v1/identity' ? identity : { ok: true })
+  })
+  const create = (options: Partial<AuthRuntimeDependencies> = {}) => createAuthRuntimeWithDependencies(config, {
+    ...ports, chrome: chrome.chrome, fetch: inspectFetch(fetch), launcher: { launch }, now: () => time, ...options,
+  })
+  return { ...ports, ...chrome, fetch, launch, create, setTime(value: number) { time = value } }
+}
+
+const signedOut = { status: 'signed-out' }
+const business = config.apiOrigin + '/v1/variants'
+const fields = (init?: RequestInit) => Object.fromEntries(new URLSearchParams(String(init?.body)))
+afterEach(() => vi.restoreAllMocks())
+
+describe('后台会话', () => {
+  it('Given 同时登录 / When 换码 / Then 只换一次并使用实际 expires_in 和零权限身份', async () => {
+    const h = harness()
+    const runtime = h.create()
+    const subscriber = vi.fn(() => { throw new Error() })
+    runtime.onSessionChange(subscriber)
+    const [first, second] = await Promise.all([runtime.login(), runtime.login()])
+    expect(first).toEqual({ status: 'authenticated', expiresAt: '1970-01-01T00:01:14.000Z', identity })
+    expect(second).toEqual(first)
+    expect(h.launch).toHaveBeenCalledOnce()
+    expect(h.fetch.mock.calls.map(([url]) => url)).toEqual([config.authOrigin + '/oauth/token', config.apiOrigin + '/v1/identity'])
+    expect(fields(h.fetch.mock.calls[0][1])).toEqual({ grant_type: 'authorization_code', client_id: config.clientId,
+      resource: 'https://api.q1lx.com/v1', redirect_uri: config.redirectUri, code: 'issued-code', code_verifier: expect.stringMatching(/^[\w-]{43}$/u) })
+    expect(subscriber).toHaveBeenCalledExactlyOnceWith(first)
+    expect(h.storage.values).toEqual({})
   })
 
-  it('rejects ambiguous resource paths before looking up a session', async () => {
-    const { chrome } = createChromePort()
-    const fetch = vi.fn()
-    const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch })
-    const denied = { code: 'request_not_allowed' }
-    for (const action of ['authorize', 'token', 'revoke', 'session', 'contexts']) {
-      for (const prefix of ['', '/API']) {
-        const route = prefix + '/app-authorizations/v1/'
-        const encodedInitial = '%' + action.charCodeAt(0).toString(16) + action.slice(1)
-        for (const path of [route + encodedInitial, route + action + '///', route + action + '%2f',
-          route.replaceAll('/', '//') + action.toUpperCase()]) {
-          await expect(runtime.authorizedFetch(config.apiOrigin + path)).rejects.toMatchObject(denied)
-        }
-      }
+  it('Given 两个扩展页面 / When 同时刷新 / Then 只消费一次且两个响应都在新令牌提交后返回', async () => {
+    const h = harness()
+    installRuntime(h.create(), h.chrome)
+    const a = createAuthFacadeWithDependencies({ chrome: h.chrome })
+    const b = createAuthFacadeWithDependencies({ chrome: h.chrome })
+    await a.login()
+    h.fetch.mockClear()
+    const afterCommit = async () => {
+      const stored = await h.repository.read()
+      expect(stored).toMatchObject({ refreshToken: 'refresh-1', accessToken: 'access-1' })
     }
-    for (const path of ['/orders%2fopen', '/orders%5Copen', '/orders\\open', '/orders/%2e/active',
-      '/orders/.%2E/active', '/orders/%2e./active', '/orders/%', '/orders/%FE', '/orders/%252Fopen']) {
-      await expect(runtime.authorizedFetch(config.apiOrigin + path)).rejects.toMatchObject(denied)
-    }
-    for (const address of ['/orders', '//api.example.com/orders', 'https://user@api.example.com/orders']) {
-      await expect(runtime.authorizedFetch(address)).rejects.toMatchObject(denied)
-    }
-    expect(fetch).not.toHaveBeenCalled()
+    await Promise.all([a.refresh().then(afterCommit), b.refresh().then(afterCommit)])
+    expect(h.fetch).toHaveBeenCalledOnce()
+    expect(fields(h.fetch.mock.calls[0][1])).toEqual({ grant_type: 'refresh_token', client_id: config.clientId,
+      resource: 'https://api.q1lx.com/v1', refresh_token: 'refresh-0' })
+    expect(JSON.stringify(h.sentMessages)).not.toMatch(/access-[01]|refresh-[01]|"jwk"|code_verifier/)
   })
 
-  it('reads the native Request URL and preserves a business POST', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token, tokenType: 'Bearer', expiresAt: new Date(50_000).toISOString(), scopes: config.scopes,
-    }
-    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-      const sent = new Request(input, init)
-      expect(sent.url).toBe(address)
-      expect(sent.method).toBe('POST')
-      expect(await sent.text()).toBe('two items')
-      expect(sent.headers.get('authorization')).toBe('Bearer ' + token)
-      return new Response(null, { status: 204 })
+  it('Given 等待锁期间 AT 到期 / When 取得锁 / Then 以锁内时钟判断并轮换', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    h.fetch.mockClear()
+    const acquire = h.request.getMockImplementation()!
+    h.request.mockImplementationOnce((name, callback) => {
+      h.setTime(74_000)
+      return acquire(name, callback)
     })
-    const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch, now: () => 1_000 })
-    const address = config.apiOrigin + '/orders/item%2Ejson/100%25?q=%2F'
-    const request = new Request(address, { method: 'POST', body: 'two items' })
-    Object.defineProperty(request, 'url', { get() { throw new Error('shadowed property') } })
-    await expect(runtime.authorizedFetch(request)).resolves.toMatchObject({ status: 204 })
-    expect(fetch).toHaveBeenCalledOnce()
-    delete storage.values[SESSION_STORAGE_KEY]
-    const outside = new Request(config.authOrigin + '/orders')
-    Object.defineProperty(outside, 'url', { value: address })
-    await expect(runtime.authorizedFetch(outside)).rejects.toMatchObject({ code: 'request_not_allowed' })
-    expect(fetch).toHaveBeenCalledOnce()
+    expect(await worker.restore()).toMatchObject({ expiresAt: '1970-01-01T00:02:27.000Z' })
+    expect(h.fetch).toHaveBeenCalledOnce()
   })
 
-  it('uses the validated URL snapshot when the caller mutates a URL object', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const fetch = vi.fn<(input: RequestInfo | URL) => Promise<Response>>(
-      async () => new Response(null, { status: 200 }),
-    )
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch,
-      now: () => 1_000,
+  it('Given 两个独立 runtime / When 同代并发刷新 / Then 锁内重读版本并返回同一轮换结果', async () => {
+    const h = harness()
+    const a = h.create()
+    await a.login()
+    const b = h.create()
+    h.fetch.mockClear()
+    await Promise.all([a.refresh(), b.refresh()])
+    expect(h.fetch).toHaveBeenCalledOnce()
+    expect(h.request.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(new Set(h.request.mock.calls.map(([name]) => name)).size).toBe(1)
+  })
+
+  it('Given 后台重启 / When 恢复到期的 AT / Then 轮换一次并使用原密钥', async () => {
+    const h = harness()
+    await h.create().login()
+    const previous = await h.repository.read() as StoredSession
+    await expect(crypto.subtle.exportKey('jwk', previous.key.privateKey)).rejects.toThrow()
+    h.setTime(74_000)
+    h.fetch.mockClear()
+    const worker = h.create({ verifyOnStartup: true })
+    await worker.ready()
+    expect(await worker.restore()).toMatchObject({ status: 'authenticated', expiresAt: '1970-01-01T00:02:27.000Z' })
+    expect(h.fetch.mock.calls.map(([url]) => url)).toEqual([config.authOrigin + '/oauth/token', config.apiOrigin + '/v1/identity'])
+    const next = await h.repository.read() as StoredSession
+    expect(await crypto.subtle.exportKey('jwk', next.key.publicKey)).toEqual(await crypto.subtle.exportKey('jwk', previous.key.publicKey))
+  })
+
+  it.each(['database', 'key', 'claim'])('Given 丢失 %s 或刷新中断 / When 重启 / Then 清理会话且不发送旧 RT', async (loss) => {
+    const h = harness()
+    await h.create().login()
+    const session = await h.repository.read() as StoredSession
+    if (loss === 'claim') await h.repository.write({ rotating: true, version: session.version })
+    if (loss === 'key') await h.repository.write({ ...session, key: undefined } as unknown as StoredSession)
+    if (loss === 'database') await new Promise<void>((resolve, reject) => {
+      const request = h.database.deleteDatabase('q1travel.oauth')
+      request.onsuccess = () => resolve()
+      request.onerror = () => reject(request.error)
     })
-    const target = new URL('https://api.example.com/orders')
-
-    const request = runtime.authorizedFetch(target)
-    target.href = 'https://outside.example.com/collect'
-    await request
-
-    expect(String(fetch.mock.calls[0]?.[0])).toBe('https://api.example.com/orders')
+    h.fetch.mockClear()
+    expect(await h.create().restore()).toEqual(signedOut)
+    expect(await h.repository.read()).toBeUndefined()
+    expect(h.fetch).not.toHaveBeenCalled()
   })
 
-  it('clears and publishes signed-out after an invalid token response', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const fetch = vi.fn(async () =>
-      jsonResponse({ error: 'invalid_token', error_description: 'expired' }, 401),
-    )
-    const runtime = createAuthRuntimeWithDependencies(config, { chrome, fetch, now: () => 1_000 })
-    const changes: unknown[] = []
-    runtime.onSessionChange((session) => changes.push(session))
-
-    const response = await runtime.authorizedFetch('https://api.example.com/orders')
-
-    expect(response.status).toBe(401)
-    expect(changes).toEqual([{ status: 'signed-out' }])
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
-  })
-
-  it('clears local state even when revocation cannot be confirmed', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => { throw new TypeError('offline') }),
-      now: () => 1_000,
+  it.each(['response', 'commit'])('Given 服务器完成轮换 / When %s 失败 / Then 重新授权且重启不重放', async (failure) => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    const server = h.fetch.getMockImplementation()!
+    h.fetch.mockImplementationOnce(async (url, init) => {
+      const claimed = await h.repository.read()
+      expect(claimed).toEqual({ rotating: true, version: expect.any(String) })
+      const response = await server(url, init)
+      if (failure === 'response') throw new Error('lost response')
+      return response
     })
-
-    await expect(runtime.logout()).rejects.toMatchObject({
-      code: 'revocation_unconfirmed',
-    })
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
-  })
-
-  it('restores a valid background session after service worker restart', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(),
-      now: () => 1_000,
-    })
-
-    await expect(runtime.getSession()).resolves.toEqual({
-      status: 'authenticated',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    })
-  })
-
-  it('verifies a restored session when the public background runtime starts', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: '2099-01-02T00:00:00.000Z',
-      scopes: ['orders:read'],
-    }
-    const fetch = vi.fn(async () => jsonResponse({
-      active: true,
-      expires_at: '2099-01-01T00:00:00.000Z',
-      scope: ['orders:read'],
-    }))
-    vi.stubGlobal('chrome', chrome)
-    vi.stubGlobal('fetch', fetch)
-    try {
-      createAuthRuntime(config)
-      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
-    } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
-  it('blocks background, authorized fetch, and UI reads until startup revocation settles', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: '2099-01-02T00:00:00.000Z',
-      scopes: ['orders:read'],
-    }
-    let resolveVerification!: (response: Response) => void
-    const fetch = vi.fn((input: RequestInfo | URL) => {
-      if (String(input).endsWith('/session')) {
-        return new Promise<Response>((resolve) => { resolveVerification = resolve })
-      }
-      return Promise.resolve(new Response(null, { status: 200 }))
-    })
-    vi.stubGlobal('chrome', chrome)
-    vi.stubGlobal('fetch', fetch)
-    try {
-      const runtime = createAuthRuntime(config)
-      const facade = createAuthFacadeWithDependencies({ chrome })
-      const backgroundRead = runtime.getSession()
-      const uiRead = facade.getSession()
-      const authorizedRequest = runtime.authorizedFetch('https://api.example.com/orders')
-      const settled = vi.fn()
-      void backgroundRead.then(settled, settled)
-      void uiRead.then(settled, settled)
-      void authorizedRequest.then(settled, settled)
-
-      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
-      await Promise.resolve()
-      expect(settled).not.toHaveBeenCalled()
-
-      resolveVerification(jsonResponse({
-        error: 'invalid_token',
-        error_description: 'Access token is invalid or expired.',
-      }, 401))
-
-      await expect(runtime.ready()).resolves.toBeUndefined()
-      await expect(backgroundRead).resolves.toEqual({ status: 'signed-out' })
-      await expect(uiRead).resolves.toEqual({ status: 'signed-out' })
-      await expect(authorizedRequest).rejects.toMatchObject({ code: 'session_expired' })
-      expect(fetch).toHaveBeenCalledOnce()
-    } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
-  it('settles startup after a network failure and preserves an unexpired local session', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: '2099-01-02T00:00:00.000Z',
-      scopes: ['orders:read'],
-    }
-    vi.stubGlobal('chrome', chrome)
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('offline') }))
-    try {
-      const runtime = createAuthRuntime(config)
-
-      await expect(runtime.ready()).rejects.toMatchObject({
-        code: 'network_unavailable',
-        retryable: true,
+    if (failure === 'commit') {
+      const write = SessionRepository.prototype.write
+      vi.spyOn(SessionRepository.prototype, 'write').mockImplementation(function (this: SessionRepository, row: SessionRecord) {
+        if (!('rotating' in row)) throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
+        return write.call(this, row)
       })
-      await expect(runtime.getSession()).resolves.toEqual({
-        status: 'authenticated',
-        expiresAt: '2099-01-02T00:00:00.000Z',
-        scopes: ['orders:read'],
-      })
-    } finally {
-      vi.unstubAllGlobals()
+    }
+    await expect(worker.refresh()).rejects.toMatchObject({ code: 'reauthorization_required' })
+    h.fetch.mockClear()
+    expect(await h.create().refresh()).toEqual(signedOut)
+    expect(h.fetch).not.toHaveBeenCalled()
+  })
+
+  it('Given 领用标记落盘失败 / When 刷新 / Then 未发令牌请求且保留可用会话', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    h.fetch.mockClear()
+    vi.spyOn(SessionRepository.prototype, 'write').mockRejectedValueOnce(new AppAuthorizationError(AuthErrorCode.storageUnavailable))
+    await expect(worker.refresh()).rejects.toMatchObject({ code: 'storage_unavailable' })
+    expect(h.fetch).not.toHaveBeenCalled()
+    expect(await worker.restore()).toMatchObject({ status: 'authenticated' })
+  })
+
+  it('Given 旧 RT 已消费 / When 替身报告重放并撤族 / Then 客户端清会话且兄弟 AT 无效', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    const stale = await h.repository.read() as StoredSession
+    await worker.refresh()
+    const sibling = await h.repository.read() as StoredSession
+    await h.repository.write(stale)
+    await expect(worker.refresh()).rejects.toMatchObject({ code: 'oauth_invalid_grant' })
+    expect(await worker.restore()).toEqual(signedOut)
+    await h.repository.write(sibling)
+    expect(await worker.getIdentity()).toEqual(signedOut)
+  })
+
+  it('Given 到期 AT 和当前 RT / When 退出 / Then 直接撤整族并清除本地会话', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    await worker.refresh()
+    h.setTime(100_000)
+    h.fetch.mockClear()
+    expect(await worker.logout()).toEqual(signedOut)
+    expect(h.fetch).toHaveBeenCalledOnce()
+    expect(fields(h.fetch.mock.calls[0][1])).toEqual({ client_id: config.clientId, token_type_hint: 'refresh_token', token: 'refresh-1' })
+    expect(await h.create().restore()).toEqual(signedOut)
+  })
+
+  it('Given 撤销请求断网 / When 退出 / Then 清本地并报告远端未确认', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    h.fetch.mockRejectedValueOnce(new Error('private message'))
+    await expect(worker.logout()).rejects.toMatchObject({ code: 'revocation_unconfirmed' })
+    expect(await worker.restore()).toEqual(signedOut)
+  })
+
+  it('Given 资源返回禁止或无效证明 / When 请求结束 / Then 保留仍然有效的会话', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    for (const [status, code] of [[403, 'insufficient_scope'], [401, 'invalid_dpop_proof']] as const) {
+      h.fetch.mockResolvedValueOnce(jsonResponse({ error: { code } }, status))
+      expect((await worker.authorizedFetch(business)).status).toBe(status)
+      expect(await worker.restore()).toMatchObject({ status: 'authenticated' })
     }
   })
 
-  it('times out startup verification and then preserves an unexpired local session', async () => {
-    vi.useFakeTimers()
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: '2099-01-02T00:00:00.000Z',
-      scopes: ['orders:read'],
-    }
-    vi.stubGlobal('chrome', chrome)
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
-    try {
-      const runtime = createAuthRuntime(config)
-      const readiness = expect(runtime.ready()).rejects.toMatchObject({
-        code: 'network_unavailable',
-      })
-      const session = runtime.getSession()
-
-      await vi.advanceTimersByTimeAsync(10_000)
-
-      await readiness
-      await expect(session).resolves.toMatchObject({ status: 'authenticated' })
-    } finally {
-      vi.useRealTimers()
-      vi.unstubAllGlobals()
-    }
+  it('Given 远端撤销 / When 后台验证或业务请求 / Then 返回退出态并通知页面', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    const publish = vi.fn()
+    worker.onSessionChange(publish)
+    h.fetch.mockResolvedValueOnce(jsonResponse({ error: { code: 'invalid_token' } }, 401))
+    expect((await worker.authorizedFetch(business)).status).toBe(401)
+    expect(publish).toHaveBeenCalledExactlyOnceWith(signedOut)
+    expect(await worker.restore()).toEqual(signedOut)
   })
 
-  it('clears an interrupted PKCE transaction during worker recovery', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[TRANSACTION_STORAGE_KEY] = {
-      state: 's'.repeat(43),
-      codeVerifier: 'v'.repeat(43),
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(),
-      now: () => 1_000,
-    })
-
-    await runtime.getSession()
-
-    expect(storage.values).not.toHaveProperty(TRANSACTION_STORAGE_KEY)
+  it('Given 旧身份查询晚于重新登录 / When 收到旧 AT 失效响应 / Then 保留新一代', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    let release!: (response: Response) => void
+    h.fetch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const old = worker.getIdentity()
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    await worker.logout()
+    const next = await worker.login()
+    const version = (await h.repository.read())?.version
+    release(jsonResponse({ error: { code: 'invalid_token' } }, 401))
+    expect(await old).toEqual(next)
+    expect((await h.repository.read())?.version).toBe(version)
   })
 
-  it('clears a remotely invalid session during verification', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => jsonResponse({
-        error: 'invalid_token',
-        error_description: 'Access token is invalid or expired.',
-      }, 401)),
-      now: () => 1_000,
-    })
-
-    await expect(runtime.verifySession()).resolves.toEqual({ status: 'signed-out' })
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
+  it('Given 后台重启遇到暂时断网 / When 首次远端复核失败 / Then 保留落盘身份以供恢复', async () => {
+    const h = harness()
+    const previous = await h.create().login()
+    h.fetch.mockRejectedValueOnce(new Error('offline'))
+    const worker = h.create({ verifyOnStartup: true })
+    await expect(worker.ready()).rejects.toMatchObject({ code: 'network_unavailable' })
+    expect(await worker.restore()).toEqual(previous)
+    expect(await worker.getIdentity()).toEqual(previous)
   })
 
-  it('treats an already expired remote session as signed out', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => jsonResponse({
-        active: true,
-        expires_at: new Date(999).toISOString(),
-        scope: ['orders:read'],
-      })),
-      now: () => 1_000,
-    })
-
-    await expect(runtime.verifySession()).resolves.toEqual({ status: 'signed-out' })
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
-  })
-
-  it('publishes session metadata changed by remote verification', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => jsonResponse({
-        active: true,
-        expires_at: new Date(40_000).toISOString(),
-        scope: ['orders:read'],
-      })),
-      now: () => 1_000,
-    })
-    const changes: AuthSession[] = []
-    runtime.onSessionChange((session) => changes.push(session))
-
-    const verified = await runtime.verifySession()
-
-    expect(changes).toEqual([verified])
-  })
-
-  it('does not clear the session after a forbidden API response', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => new Response(null, { status: 403 })),
-      now: () => 1_000,
-    })
-
-    await expect(
-      runtime.authorizedFetch('https://api.example.com/orders'),
-    ).resolves.toMatchObject({ status: 403 })
-    await expect(runtime.getSession()).resolves.toMatchObject({
-      status: 'authenticated',
-    })
-  })
-
-  it('classifies a rejected identity prompt as user cancellation', async () => {
-    const { chrome } = createChromePort()
-    chrome.identity.launchWebAuthFlow = async () => {
-      throw new Error('The user did not approve access.')
-    }
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(),
-    })
-
-    await expect(runtime.login()).rejects.toMatchObject({
-      code: 'interaction_cancelled',
-    })
-  })
-
-  it('does not retain rejected credential material in errors or logs', async () => {
-    const { chrome } = createChromePort()
-    const rejectedCredential = 'rejected-credential-material'
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      launcher: {
-        async launch(url) {
-          const state = new URL(url).searchParams.get('state')
-          return `${redirectUri}?code=${'c'.repeat(43)}&state=${state}`
-        },
-      },
-      fetch: vi.fn(async () => jsonResponse({
-        error: 'invalid_grant',
-        error_description: rejectedCredential,
-      }, 400)),
-    })
-
-    const error = await runtime.login().catch((reason: unknown) => reason)
+  it('Given 服务端错误正文带有敏感内容 / When 页面发起登录 / Then 日志与消息都不携带凭据', async () => {
+    const h = harness()
+    const loggers = (['log', 'warn', 'error', 'info', 'debug'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => {}))
+    const secret = 'fixture-private-server-detail'
+    h.fetch.mockResolvedValueOnce(jsonResponse({ error: 'invalid_grant', error_description: secret }, 400))
+    installRuntime(h.create(), h.chrome)
+    const ui = createAuthFacadeWithDependencies({ chrome: h.chrome })
+    const error = await ui.login().catch((reason: unknown) => reason)
     expect(error).toMatchObject({ code: 'oauth_invalid_grant' })
-    expect(JSON.stringify({
-      name: (error as Error).name,
-      message: (error as Error).message,
-      code: (error as { code: string }).code,
-    })).not.toContain(rejectedCredential)
-    expect(errorLog).not.toHaveBeenCalled()
-    errorLog.mockRestore()
+    const visible = JSON.stringify([error, String(error), h.sentMessages, loggers.map((logger) => logger.mock.calls)])
+    expect(visible).not.toContain(secret)
+    expect(visible).not.toContain('code_verifier')
+    expect(visible).not.toContain('issued-code')
+    for (const logger of loggers) expect(logger).not.toHaveBeenCalled()
   })
 
-  it('fails closed for missing configuration and unavailable secure storage', async () => {
-    const { chrome } = createChromePort()
-    expect(() => createAuthRuntimeWithDependencies(
-      { ...config, clientId: '' },
-      { chrome, fetch: vi.fn() },
-    )).toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
-
-    class UnavailableStorage extends MemorySessionStorage {
-      override async setAccessLevel(): Promise<void> {
-        throw new Error('unavailable')
-      }
+  it('Given 资源输入 / When 地址或头超出授权范围 / Then 在读取存储前拒绝', async () => {
+    const h = harness()
+    const worker = h.create()
+    const read = vi.spyOn(SessionRepository.prototype, 'read')
+    for (const address of [config.authOrigin + '/oauth/token', config.apiOrigin + '/oauth/token',
+      config.apiOrigin + '/v10/path', business + '/%252f', business + '/..%2Fadmin', business + '/%2e%2e']) {
+      await expect(worker.authorizedFetch(address)).rejects.toMatchObject({ code: 'request_not_allowed' })
     }
-    const unavailable = createChromePort(new UnavailableStorage())
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome: unavailable.chrome,
-      fetch: vi.fn(),
-    })
-    await expect(runtime.getSession()).rejects.toMatchObject({
-      code: 'storage_unavailable',
-    })
-  })
-
-  it('sanitizes failures from an injected launcher', async () => {
-    const { chrome } = createChromePort()
-    const sensitiveDetail = 'callback contained sensitive material'
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(),
-      launcher: {
-        async launch() {
-          throw new Error(sensitiveDetail)
-        },
-      },
-    })
-
-    const error = await runtime.login().catch((reason: unknown) => reason)
-    expect(error).toMatchObject({ code: 'interaction_failed' })
-    expect((error as Error).message).not.toContain(sensitiveDetail)
-  })
-
-  it('prevents an in-flight login from restoring a session after logout', async () => {
-    const { chrome, storage } = createChromePort()
-    let release!: (callback: string) => void
-    let authorizationUrl = ''
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => jsonResponse({
-        access_token: token,
-        token_type: 'Bearer',
-        expires_in: 28_800,
-        scope: 'orders:read',
-      })),
-      launcher: {
-        launch(url) {
-          authorizationUrl = url
-          return new Promise<string>((resolve) => { release = resolve })
-        },
-      },
-      now: () => 1_000,
-    })
-
-    const login = runtime.login()
-    await vi.waitFor(() => expect(authorizationUrl).not.toBe(''))
-    await runtime.logout()
-    const state = new URL(authorizationUrl).searchParams.get('state')
-    release(`${redirectUri}?code=${'c'.repeat(43)}&state=${state}`)
-
-    await expect(login).rejects.toMatchObject({ code: 'interaction_cancelled' })
-    await expect(runtime.getSession()).resolves.toEqual({ status: 'signed-out' })
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
-  })
-
-  it('does not let a throwing session subscriber fail a completed login', async () => {
-    const { chrome } = createChromePort()
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => jsonResponse({
-        access_token: token,
-        token_type: 'Bearer',
-        expires_in: 28_800,
-        scope: 'orders:read',
-      })),
-      launcher: {
-        async launch(url) {
-          const state = new URL(url).searchParams.get('state')
-          return `${redirectUri}?code=${'c'.repeat(43)}&state=${state}`
-        },
-      },
-      now: () => 1_000,
-    })
-    runtime.onSessionChange(() => { throw new Error('consumer failure') })
-
-    await expect(runtime.login()).resolves.toMatchObject({ status: 'authenticated' })
-  })
-
-  it('does not restore an old session when verification completes after logout', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
+    for (const name of ['Authorization', 'DPoP']) {
+      await expect(worker.authorizedFetch(business, { headers: { [name]: 'caller' } })).rejects.toMatchObject({ code: 'request_not_allowed' })
     }
-    let resolveVerification!: (response: Response) => void
-    const fetch = vi.fn((input: RequestInfo | URL) => {
-      if (String(input).endsWith('/session')) {
-        return new Promise<Response>((resolve) => { resolveVerification = resolve })
-      }
-      return Promise.resolve(new Response(null, { status: 200 }))
-    })
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch,
-      now: () => 1_000,
-    })
-
-    const verification = runtime.verifySession()
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
-    await runtime.logout()
-    resolveVerification(jsonResponse({
-      active: true,
-      expires_at: new Date(40_000).toISOString(),
-      scope: ['orders:read'],
-    }))
-
-    await expect(verification).resolves.toEqual({ status: 'signed-out' })
-    await expect(runtime.getSession()).resolves.toEqual({ status: 'signed-out' })
+    expect(read).not.toHaveBeenCalled()
+    expect(h.fetch).not.toHaveBeenCalled()
   })
 
-  it('does not let an old logout clear a later successful login', async () => {
-    const { chrome, storage } = createChromePort()
-    const newToken = 'n'.repeat(43)
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    let resolveRevocation!: () => void
-    const fetch = vi.fn((input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/revoke')) {
-        return new Promise<Response>((resolve) => {
-          resolveRevocation = () => resolve(new Response(null, { status: 200 }))
-        })
-      }
-      return Promise.resolve(jsonResponse({
-        access_token: newToken,
-        token_type: 'Bearer',
-        expires_in: 28_800,
-        scope: 'orders:read',
-      }))
-    })
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch,
-      launcher: {
-        async launch(url) {
-          const state = new URL(url).searchParams.get('state')
-          return `${redirectUri}?code=${'c'.repeat(43)}&state=${state}`
-        },
-      },
-      now: () => 1_000,
-    })
-    const changes: AuthSession[] = []
-    runtime.onSessionChange((session) => changes.push(session))
-
-    const logout = runtime.logout()
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
-    await runtime.login()
-    resolveRevocation()
-    await logout
-
-    expect(storage.values[SESSION_STORAGE_KEY]).toMatchObject({ accessToken: newToken })
-    expect(changes.at(-1)).toMatchObject({ status: 'authenticated' })
+  it('Given 共享链接对象与 Request / When 调用后地址变化 / Then 只向已校验的目标发送', async () => {
+    const h = harness()
+    const worker = h.create()
+    await worker.login()
+    const url = new URL(business)
+    const operation = worker.authorizedFetch(url)
+    url.hostname = 'outside.test'
+    await operation
+    expect(h.fetch.mock.calls.at(-1)?.[0]).toBe(business)
+    const request = new Request(config.authOrigin + '/oauth/token')
+    Object.defineProperty(request, 'url', { value: business })
+    await expect(worker.authorizedFetch(request)).rejects.toMatchObject({ code: 'request_not_allowed' })
   })
 
-  it('clears the old session when a later login is cancelled', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    let resolveRevocation!: () => void
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(() => new Promise<Response>((resolve) => {
-        resolveRevocation = () => resolve(new Response(null, { status: 200 }))
-      })),
-      launcher: {
-        async launch() {
-          throw new Error('The user did not approve access.')
-        },
-      },
-      now: () => 1_000,
+  it.each(['cancel', 'invalid', 'exception'])('Given %s 登录交互 / When 提示失败 / Then 错误可安全返回', async (mode) => {
+    const h = harness()
+    h.launch.mockImplementationOnce(async () => {
+      if (mode === 'invalid') return config.redirectUri + '?code=private'
+      throw new Error(mode === 'cancel' ? 'User rejected the request.' : 'private')
     })
-
-    const logout = runtime.logout()
-    await vi.waitFor(() => expect(resolveRevocation).toBeTypeOf('function'))
-    await expect(runtime.login()).rejects.toMatchObject({ code: 'interaction_cancelled' })
-    resolveRevocation()
-
-    await expect(logout).resolves.toEqual({ status: 'signed-out' })
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
+    const error = await h.create().login().catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(AppAuthorizationError)
+    expect(String(error)).not.toContain('private')
+    expect(h.fetch).not.toHaveBeenCalled()
   })
 
-  it('clears locally without a second storage read during logout', async () => {
-    class SecondReadFailureStorage extends MemorySessionStorage {
-      reads = 0
-
-      override async get(keys: string | readonly string[] | null) {
-        this.reads += 1
-        if (this.reads > 1) throw new Error('second read failed')
-        return super.get(keys)
-      }
-    }
-    const storage = new SecondReadFailureStorage()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const { chrome } = createChromePort(storage)
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => new Response(null, { status: 200 })),
-      now: () => 1_000,
-    })
-
-    await expect(runtime.logout()).resolves.toEqual({ status: 'signed-out' })
-    expect(storage.reads).toBe(1)
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
-  })
-
-  it('does not let an old verification failure clear a newer login', async () => {
-    const { chrome, storage } = createChromePort()
-    const newToken = 'n'.repeat(43)
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    let resolveVerification!: (response: Response) => void
-    const fetch = vi.fn((input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/session')) {
-        return new Promise<Response>((resolve) => { resolveVerification = resolve })
-      }
-      if (url.endsWith('/token')) {
-        return Promise.resolve(jsonResponse({
-          access_token: newToken,
-          token_type: 'Bearer',
-          expires_in: 28_800,
-          scope: 'orders:read',
-        }))
-      }
-      return Promise.resolve(new Response(null, { status: 200 }))
-    })
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch,
-      launcher: {
-        async launch(url) {
-          const state = new URL(url).searchParams.get('state')
-          return `${redirectUri}?code=${'c'.repeat(43)}&state=${state}`
-        },
-      },
-      now: () => 1_000,
-    })
-
-    const verification = runtime.verifySession()
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
-    await runtime.login()
-    resolveVerification(jsonResponse({
-      error: 'invalid_token',
-      error_description: 'Access token is invalid or expired.',
-    }, 401))
-
-    await expect(verification).resolves.toMatchObject({ status: 'authenticated' })
-    await expect(runtime.getSession()).resolves.toMatchObject({
-      status: 'authenticated',
-      scopes: ['orders:read'],
-    })
-    expect(storage.values[SESSION_STORAGE_KEY]).toMatchObject({ accessToken: newToken })
-  })
-
-  it('still attempts local cleanup when reading storage fails during logout', async () => {
-    class ReadFailureStorage extends MemorySessionStorage {
-      override async get(): Promise<Record<string, unknown>> {
-        throw new Error('read failed')
-      }
-    }
-    const storage = new ReadFailureStorage()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    const { chrome } = createChromePort(storage)
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(),
-      now: () => 1_000,
-    })
-
-    await expect(runtime.logout()).rejects.toMatchObject({
-      code: 'storage_unavailable',
-    })
-    expect(storage.values).not.toHaveProperty(SESSION_STORAGE_KEY)
-  })
-
-  it('returns a successful streaming response without waiting for its body to close', async () => {
-    const { chrome, storage } = createChromePort()
-    storage.values[SESSION_STORAGE_KEY] = {
-      accessToken: token,
-      tokenType: 'Bearer',
-      expiresAt: new Date(50_000).toISOString(),
-      scopes: ['orders:read'],
-    }
-    let controller!: ReadableStreamDefaultController<Uint8Array>
-    const stream = new ReadableStream<Uint8Array>({
-      start(value) {
-        controller = value
-        value.enqueue(new TextEncoder().encode('data: ready\n\n'))
-      },
-    })
-    const runtime = createAuthRuntimeWithDependencies(config, {
-      chrome,
-      fetch: vi.fn(async () => new Response(stream, {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-      })),
-      now: () => 1_000,
-    })
-
-    const pending = runtime.authorizedFetch('https://api.example.com/events')
-    const result = await Promise.race([
-      pending,
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 25)),
-    ])
-    controller.close()
-
-    expect(result).toBeInstanceOf(Response)
-    await pending
+  it('Given 登录提示未完成 / When 退出后旧回调到达 / Then 不换码也不恢复授权', async () => {
+    const h = harness()
+    let release!: (url: string) => void
+    h.launch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const worker = h.create()
+    const login = expect(worker.login()).rejects.toMatchObject({ code: 'interaction_cancelled' })
+    await vi.waitFor(() => expect(h.launch).toHaveBeenCalledOnce())
+    await worker.logout()
+    release(callbackFor(h.launch.mock.calls[0][0]))
+    await login
+    expect(h.fetch).not.toHaveBeenCalled()
   })
 })
