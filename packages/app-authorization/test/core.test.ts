@@ -130,3 +130,22 @@ describe('authorization callback validation', () => {
     ).toThrowError(expect.objectContaining({ code: 'invalid_callback' }))
   })
 })
+
+describe('公开 OAuth 一致性', () => {
+  it('Given 零 scope 登记 / When 生成请求 / Then 使用精确 resource 与授权码模式', async () => {
+    const config = resolveAuthConfig({ ...authConfig, scopes: [] })
+    const { authorizationUrl } = await createAuthorizationRequest(config, cryptoPort)
+    const url = new URL(authorizationUrl)
+    expect(url.origin + url.pathname).toBe(authConfig.authOrigin + '/oauth/authorize')
+    expect(url.searchParams.get('response_type')).toBe('code')
+    expect(url.searchParams.get('resource')).toBe(authConfig.apiOrigin + '/v1')
+    expect(url.searchParams.has('scope')).toBe(false)
+  })
+
+  it('Given 已登记 issuer / When 接收带 iss 的成功回调 / Then 返回不透明授权码', () => {
+    const state = 's'.repeat(43)
+    const callback = new URL(authConfig.redirectUri)
+    callback.search = new URLSearchParams({ code: 'issued-code', state, iss: authConfig.authOrigin }).toString()
+    expect(validateAuthorizationCallback(callback.href, authConfig.redirectUri, state, authConfig.authOrigin)).toBe('issued-code')
+  })
+})
