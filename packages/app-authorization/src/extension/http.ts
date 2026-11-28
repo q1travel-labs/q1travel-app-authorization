@@ -7,7 +7,7 @@ import type { TokenGrant } from './storage.js'
 export type FetchPort = typeof globalThis.fetch
 const invalid = () => new AppAuthorizationError(AuthErrorCode.responseInvalid)
 
-export function resourceRequest(input: RequestInfo | URL, init: RequestInit, resource: string): Request {
+export function resourceRequest(input: RequestInfo | URL, init: RequestInit, apiOrigin: string): Request {
   try {
     const address: string = input instanceof Request ? Reflect.get(Request.prototype, 'url', input)
       : input instanceof URL ? input.href : input
@@ -18,7 +18,7 @@ export function resourceRequest(input: RequestInfo | URL, init: RequestInit, res
       return /[\\/]/u.test(decoded) || /%[0-9a-f]{2}/iu.test(decoded) || decoded === '.' || decoded === '..'
     })) throw invalid()
     const url = new URL(address)
-    if (url.origin + '/v1' !== resource || !url.pathname.startsWith('/v1/') || url.username || url.password) throw invalid()
+    if (url.origin !== apiOrigin || !url.pathname.startsWith('/v1/') || url.username || url.password) throw invalid()
     const headers = new Headers(input instanceof Request ? input.headers : undefined)
     for (const [name, value] of new Headers(init.headers)) headers.set(name, value)
     if (headers.has('authorization') || headers.has('dpop')) throw invalid()
@@ -33,6 +33,7 @@ async function readJson(response: Response) {
 async function oauthFailure(response: Response): Promise<never> {
   const body = await response.json().catch(() => null)
   const code = body?.error
+  if (code === 'invalid_dpop_proof') throw new AppAuthorizationError(AuthErrorCode.invalidDpopProof)
   if (code === 'invalid_grant') throw new AppAuthorizationError(AuthErrorCode.oauthInvalidGrant)
   if (code === 'invalid_token') throw new AppAuthorizationError(AuthErrorCode.invalidToken)
   if (response.status >= 500 || code === 'temporarily_unavailable') throw new AppAuthorizationError(AuthErrorCode.serverUnavailable)
@@ -41,7 +42,7 @@ async function oauthFailure(response: Response): Promise<never> {
 
 export function oauthClient(config: ResolvedAuthConfig, signed: SignedFetch, now: () => number) {
   const form = (url: string, fields: Record<string, string>, key: CryptoKeyPair) => signed('as', key, new Request(url, {
-    method: 'POST', body: new URLSearchParams({ client_id: config.clientId, ...fields }),
+    method: 'POST', body: new URLSearchParams({ client_id: config.clientId, ...fields }), signal: AbortSignal.timeout(10_000),
   }))
 
   async function token(fields: Record<string, string>, key: CryptoKeyPair, allowed: readonly string[]): Promise<TokenGrant> {
@@ -74,7 +75,12 @@ export function oauthClient(config: ResolvedAuthConfig, signed: SignedFetch, now
     },
     async identity(grant: TokenGrant, key: CryptoKeyPair, signal?: AbortSignal) {
       const response = await signed('rs', key, new Request(config.identityUrl, { signal }), grant.accessToken)
-      if (await isInvalidToken(response)) throw new AppAuthorizationError(AuthErrorCode.invalidToken)
+      if (response.status === 401) {
+        const body = await readJson(response)
+        if (body?.error?.code === 'invalid_token') throw new AppAuthorizationError(AuthErrorCode.invalidToken)
+        if (body?.error?.code === 'invalid_dpop_proof') throw new AppAuthorizationError(AuthErrorCode.invalidDpopProof)
+        throw invalid()
+      }
       if (response.status === 403) throw new AppAuthorizationError(AuthErrorCode.forbidden)
       if (response.status >= 500) throw new AppAuthorizationError(AuthErrorCode.serverUnavailable)
       if (response.status !== 200) throw invalid()

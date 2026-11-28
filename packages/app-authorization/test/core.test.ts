@@ -113,7 +113,7 @@ describe('authorization callback validation', () => {
     `https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/other?code=${'c'.repeat(43)}&state=${state}`,
   ])('rejects a callback outside the exact redirect origin and path', (callback) => {
     expect(() =>
-      validateAuthorizationCallback(callback, redirectUri, state),
+      validateAuthorizationCallback(callback, redirectUri, state, authConfig.authOrigin),
     ).toThrowError(expect.objectContaining({ code: 'invalid_callback' }))
   })
 })
@@ -125,7 +125,7 @@ describe('公开 OAuth 一致性', () => {
     const url = new URL(authorizationUrl)
     expect(url.origin + url.pathname).toBe(authConfig.authOrigin + '/oauth/authorize')
     expect(url.searchParams.get('response_type')).toBe('code')
-    expect(url.searchParams.get('resource')).toBe(authConfig.apiOrigin + '/v1')
+    expect(url.searchParams.get('resource')).toBe('https://api.q1lx.com/v1')
     expect(url.searchParams.has('scope')).toBe(false)
   })
 
@@ -135,4 +135,21 @@ describe('公开 OAuth 一致性', () => {
     callback.search = new URLSearchParams({ code: 'issued-code', state, iss: authConfig.authOrigin }).toString()
     expect(validateAuthorizationCallback(callback.href, authConfig.redirectUri, state, authConfig.authOrigin)).toBe('issued-code')
   })
+})
+
+it('Given 本机传输地址 / When 构建授权请求 / Then 保留冻结的 REST audience 与 issuer', () => {
+  expect(resolveAuthConfig(authConfig)).toMatchObject({
+    issuer: 'https://connect.q1lx.com', resource: 'https://api.q1lx.com/v1',
+  })
+})
+
+it.each(['code', 'error'])('Given %s 回调 / When iss 缺失、重复或来自其他服务 / Then 拒绝', (field) => {
+  const state = 'A+ B'
+  const callback = new URL(authConfig.redirectUri)
+  const issuer = 'https://connect.q1lx.com'
+  callback.search = new URLSearchParams({ [field]: field === 'error' ? 'access_denied' : 'opaque', state }).toString()
+  for (const suffix of ['', '&iss=https://other.test', '&iss=' + issuer + '&iss=' + issuer]) {
+    expect(() => validateAuthorizationCallback(callback.href + suffix, authConfig.redirectUri, state, issuer))
+      .toThrowError(expect.objectContaining({ code: 'invalid_callback' }))
+  }
 })

@@ -1,3 +1,4 @@
+import { parseIdentity } from '../core/identity.js'
 import { AppAuthorizationError, AuthErrorCode, type AuthSession } from '../core/types.js'
 import type { oauthClient } from './http.js'
 import { SessionRepository, type SessionRecord, type StoredSession } from './storage.js'
@@ -18,7 +19,8 @@ export function createSessions(repository: SessionRepository, locks: LockManager
 
   async function usable(record: SessionRecord | undefined) {
     if (!record) return undefined
-    if ('rotating' in record || !record.key?.privateKey || !record.key.publicKey || record.key.privateKey.extractable) {
+    if ('rotating' in record || !record.key?.privateKey || !record.key.publicKey ||
+      record.key.privateKey.extractable || !parseIdentity(record.identity) || !Number.isFinite(Date.parse(record.expiresAt))) {
       await clear()
       return undefined
     }
@@ -105,10 +107,10 @@ export function createSessions(repository: SessionRepository, locks: LockManager
         let current: StoredSession | undefined
         try { current = await usable(await repository.read()) }
         catch (error) { await clear(); throw error }
-        if (current) await clear()
         if (current) {
           try { await oauth.revoke(current, current.key) }
           catch { throw new AppAuthorizationError(AuthErrorCode.revocationUnconfirmed) }
+          finally { await clear() }
         }
       })
       return publicSession()

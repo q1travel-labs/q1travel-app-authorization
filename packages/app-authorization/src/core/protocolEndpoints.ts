@@ -1,9 +1,9 @@
-export const protocolEndpoints = (issuer: string, apiOrigin: string) => ({
-  issuer,
-  resource: apiOrigin + '/v1',
+export const protocolEndpoints = (authOrigin: string, apiOrigin: string) => ({
+  issuer: 'https://connect.q1lx.com',
+  resource: 'https://api.q1lx.com/v1',
   identityUrl: apiOrigin + '/v1/identity',
-  authorizeUrl: issuer + '/oauth/authorize',
-  tokenUrl: issuer + '/oauth/token',
-  revokeUrl: issuer + '/oauth/revoke',
-  contextsUrl: issuer + '/oauth/contexts',
+  authorizeUrl: authOrigin + '/oauth/authorize',
+  tokenUrl: authOrigin + '/oauth/token',
+  revokeUrl: authOrigin + '/oauth/revoke',
+  contextsUrl: authOrigin + '/oauth/contexts',
 })

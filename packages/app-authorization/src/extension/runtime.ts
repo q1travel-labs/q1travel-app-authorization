@@ -7,7 +7,7 @@ import { createProofKey, createSignedFetch } from './dpop.js'
 import { isInvalidToken, oauthClient, resourceRequest, type FetchPort } from './http.js'
 import type { AuthFlowLauncher, AuthRuntimeChromePort, ChromePort } from './ports.js'
 import { createSessions, publicSession } from './sessions.js'
-import { SessionRepository, type StoredTransaction, type TokenGrant } from './storage.js'
+import { SessionRepository, sessionNamespace, type StoredTransaction, type TokenGrant } from './storage.js'
 import { browserCryptoPort } from './webCrypto.js'
 
 export interface AuthRuntime {
@@ -72,8 +72,7 @@ export function createAuthRuntimeWithDependencies(input: AuthConfig, options: Au
   const database = options.database ?? globalThis.indexedDB
   const locks = options.locks ?? globalThis.navigator?.locks
   if (!database || !locks) throw new AppAuthorizationError(AuthErrorCode.storageUnavailable)
-  const repository = new SessionRepository(JSON.stringify([config.issuer, config.resource, config.clientId,
-    config.redirectUri, [...config.scopes].sort()]), database)
+  const repository = new SessionRepository(sessionNamespace(config), database)
   const subscribers = new Set<(session: AuthSession) => void>()
   const sessions = createSessions(repository, locks, oauth, now, (session) => {
     for (const subscriber of subscribers) {
@@ -182,7 +181,7 @@ export function createAuthRuntimeWithDependencies(input: AuthConfig, options: Au
     async logout() { newAttempt(); pending = undefined; return sessions.logout() },
     onSessionChange(callback) { subscribers.add(callback); return () => subscribers.delete(callback) },
     async authorizedFetch(input, init = {}) {
-      const request = resourceRequest(input, init, config.resource)
+      const request = resourceRequest(input, init, config.apiOrigin)
       await settled
       const stored = await sessions.current()
       if (!stored) throw new AppAuthorizationError(AuthErrorCode.sessionExpired)

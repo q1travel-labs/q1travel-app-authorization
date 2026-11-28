@@ -1,26 +1,26 @@
+import { browserPorts, installationId, inspectFetch, oauthResponse } from './oauth.js'
 import type { AuthConfig } from '../../src/core/config.js'
 import { expect, vi } from 'vitest'
 import { createAdjacentTabAuthRuntimeWithDependencies, TAB_AUTH_CALLBACK, type AdjacentTabAuthRuntimeDependencies } from '../../src/extension/tabAuthRuntime.js'
 import type { AuthTab, ExternalCallbackListener } from '../../src/extension/tabAuthPorts.js'
-import { createChromePort, jsonResponse, MemorySessionStorage } from './fakes.js'
+import { createChromePort, MemorySessionStorage } from './fakes.js'
 
 const redirectUri = 'https://web.example.test/oauth-callback.html'
-const defaultConfig = { clientId: 'client-v2', redirectUri, scopes: ['orders:read'], authOrigin: 'https://connect.example.test', apiOrigin: 'https://api.example.test' }
-const key = 'q1travel.appAuthorization.tabTransaction.v1'
-const contextKey = 'q1travel.appAuthorization.tabTransaction.v2'
-const token = 't'.repeat(43)
+export const defaultConfig = { installationId, clientId: 'client-v2', redirectUri, scopes: ['orders:read'], authOrigin: 'https://connect.example.test', apiOrigin: 'https://api.example.test' }
+export const key = 'q1travel.oauth.tabTransaction'
 
 export const contextTabHarness = (storage = new MemorySessionStorage(), config: AuthConfig = defaultConfig) => {
   let currentTime = 1_000
   const base = createChromePort(storage)
+  const ports = browserPorts(config)
   const external = new Set<ExternalCallbackListener>()
   const removed = new Set<(id: number) => void>()
   const alarms = new Set<(alarm: { name: string }) => void>()
   const tabs = new Map<number, AuthTab>([[7, { id: 7, windowId: 9, index: 3, active: false }]])
-  const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ access_token: token, token_type: 'Bearer', expires_in: 28_800, scope: 'orders:read' }))
+  const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => oauthResponse(input, config.scopes))
   const chrome = {
     storage: base.chrome.storage,
-    runtime: { ...base.chrome.runtime, onMessageExternal: {
+    runtime: { ...base.chrome.runtime, id: config.installationId, onMessageExternal: {
       addListener: (listener: ExternalCallbackListener) => { external.add(listener) },
       removeListener: (listener: ExternalCallbackListener) => { external.delete(listener) },
     } },
@@ -46,22 +46,22 @@ export const contextTabHarness = (storage = new MemorySessionStorage(), config: 
     },
   }
   const create = (overrides: Partial<AdjacentTabAuthRuntimeDependencies> = {}) => createAdjacentTabAuthRuntimeWithDependencies(config, {
-    chrome, fetch, now: () => currentTime, getSourceTab: async () => tabs.get(7)!, timeoutMs: 1_000, ...overrides,
+    ...ports, chrome, now: () => currentTime, getSourceTab: async () => tabs.get(7)!, timeoutMs: 1_000, ...overrides, fetch: inspectFetch(overrides.fetch ?? fetch),
   })
   const dispatch = async (url?: string, senderOverrides: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => {
-    const transaction = (storage.values[contextKey] ?? storage.values[key]) as { state: string } | undefined
-    const callbackUrl = url ?? `${config.redirectUri}?code=${'c'.repeat(43)}&state=${transaction?.state}`
+    const transaction = storage.values[key] as { state: string } | undefined
+    const callbackUrl = url ?? `${config.redirectUri}?code=${'c'.repeat(43)}&state=${transaction?.state}&iss=${encodeURIComponent('https://connect.q1lx.com')}`
     const sender = { origin: new URL(config.redirectUri).origin, url: callbackUrl, frameId: 0, tab: { id: 11 }, ...senderOverrides }
     for (const listener of external) {
       let resolve!: (response: unknown) => void
       const response = new Promise<unknown>((accept) => { resolve = accept })
-      const result = listener({ type: TAB_AUTH_CALLBACK, callbackUrl, ...extra }, sender, resolve)
+      const result = listener({ type: TAB_AUTH_CALLBACK, callbackUrl, clientId: config.clientId, extensionId: chrome.runtime.id, ...extra }, sender, resolve)
       if (result === true) return await response
     }
     return undefined
   }
   const started = async () => vi.waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(11, { url: expect.stringContaining('/authorize?') }))
   const restart = (overrides: Partial<AdjacentTabAuthRuntimeDependencies> = {}) => { external.clear(); removed.clear(); alarms.clear(); base.listeners.clear(); return create(overrides) }
-  return { listeners: base.listeners, chrome, fetch, storage, tabs, create, dispatch, started, restart, external, removed, alarms, setTime: (value: number) => { currentTime = value } }
+  return { ...ports, listeners: base.listeners, chrome, fetch, storage, tabs, create, dispatch, started, restart, external, removed, alarms, setTime: (value: number) => { currentTime = value } }
 }
 

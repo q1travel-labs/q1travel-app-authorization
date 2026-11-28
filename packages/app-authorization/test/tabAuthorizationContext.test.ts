@@ -1,3 +1,4 @@
+import { grant, identity } from './helpers/oauth.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AUTH_PROTOCOL } from '../src/extension/protocol.js'
 import type { AuthorizationContextPort } from '../src/extension/authorizationContextPort.js'
@@ -5,8 +6,7 @@ import type { AuthorizationSourceMetadata, RuntimeMessageSender } from '../src/e
 import { contextTabHarness } from './helpers/contextTabFakes.js'
 
 const token = 'a'.repeat(42) + 'A'
-const key = 'q1travel.appAuthorization.tabTransaction.v2'
-const legacyKey = 'q1travel.appAuthorization.tabTransaction.v1'
+const key = 'q1travel.oauth.tabTransaction'
 const port = () => ({ prepare: vi.fn(async () => ({ token })), assertCurrent: vi.fn<AuthorizationContextPort['assertCurrent']>(async () => undefined) })
 const sender = (tabId?: number): RuntimeMessageSender => ({ id: 'abcdefghijklmnopabcdefghijklmnop', url: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/ui.html?ignored=1', origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop', frameId: tabId ? 3 : 0, documentId: 'ui-document', ...(tabId ? { tab: { id: tabId } } : {}) })
 const dispatchLogin = async (h: ReturnType<typeof contextTabHarness>, source = sender()) => {
@@ -29,9 +29,8 @@ describe('adjacent backend context and trusted source', () => {
     const login = dispatchLogin(h, sender(7))
     await h.started()
     expect(getSourceTab).toHaveBeenCalledExactlyOnceWith({ tabId: 7, frameId: 3, documentId: 'ui-document' })
-    expect(context.prepare).toHaveBeenCalledWith({ contextsUrl: 'https://connect.example.test/api/app-authorizations/v1/contexts', sourceTabId: 7, clientId: 'client-v2', redirectUri: 'https://web.example.test/oauth-callback.html', state: expect.any(String), codeChallenge: expect.any(String) })
+    expect(context.prepare).toHaveBeenCalledWith({ contextsUrl: 'https://connect.example.test/oauth/contexts', sourceTabId: 7, clientId: 'client-v2', redirectUri: 'https://web.example.test/oauth-callback.html', state: expect.any(String), codeChallenge: expect.any(String) })
     expect(Object.keys(h.storage.values[key] as object).sort()).toEqual(['state', 'codeVerifier', 'config', 'sourceTabId', 'sourceWindowId', 'authTabId', 'expiresAt', 'phase', 'authorizationContextToken'].sort())
-    expect(h.storage.values[legacyKey]).toBeUndefined()
     expect(await h.dispatch()).toEqual({ ok: true })
     expect(await login).toMatchObject({ ok: true })
     expect(context.assertCurrent.mock.calls).toEqual([[{ token, phase: 'beforeExchange' }], [{ token, phase: 'beforeSessionCommit' }]])
@@ -73,8 +72,8 @@ describe('adjacent backend context and trusted source', () => {
     await h.started()
     expect(await h.dispatch()).toMatchObject({ ok: false, error: { code: 'interaction_failed' } })
     await rejection
-    expect(await runtime.getSession()).toEqual({ status: 'signed-out' })
-    expect(h.fetch).toHaveBeenCalledTimes(phase === 'beforeExchange' ? 0 : 2)
+    expect(await runtime.restore()).toEqual({ status: 'signed-out' })
+    expect(h.fetch).toHaveBeenCalledTimes(phase === 'beforeExchange' ? 0 : 3)
     expect(h.storage.values[key]).toBeUndefined()
   })
 
@@ -88,18 +87,17 @@ describe('adjacent backend context and trusted source', () => {
     await runtime.ready()
     expect(await h.dispatch()).toMatchObject({ ok: false })
     expect(h.fetch).not.toHaveBeenCalled()
-    expect(await runtime.getSession()).toEqual({ status: 'signed-out' })
+    expect(await runtime.restore()).toEqual({ status: 'signed-out' })
     expect(h.storage.values[key]).toBeUndefined()
   })
 
-  it.each([true, false])('clears incompatible pending versions without exchange, strict=%s', async (strict) => {
+  it.each([true, false])('clears a pending flow whose context policy changed without exchange, strict=%s', async (strict) => {
     const h = contextTabHarness()
     void h.create(strict ? {} : { authorizationContextPort: port() }).login()
     await h.started()
     const runtime = h.restart(strict ? { authorizationContextPort: port() } : {})
     await runtime.ready()
     expect(h.storage.values[key]).toBeUndefined()
-    expect(h.storage.values[legacyKey]).toBeUndefined()
     expect(await h.dispatch()).toMatchObject({ ok: false })
     expect(h.fetch).not.toHaveBeenCalled()
   })
@@ -136,7 +134,7 @@ describe('adjacent backend context and trusted source', () => {
 describe('source capture and delayed context fences', () => {
   it('captures popup source before awaiting startup verification', async () => {
     const h = contextTabHarness()
-    h.storage.values['q1travel.appAuthorization.session.v1'] = { accessToken: 'o'.repeat(43), tokenType: 'Bearer', expiresAt: '2099-01-01T00:00:00.000Z', scopes: ['orders:read'] }
+    await h.seed()
     let active = 7
     h.tabs.set(8, { id: 8, active: true, index: 5, windowId: 9 })
     let release!: (value: Response) => void
@@ -148,7 +146,7 @@ describe('source capture and delayed context fences', () => {
     expect(getSourceTab).toHaveBeenCalledOnce()
     active = 8
     await vi.waitFor(() => expect(release).toBeTypeOf('function'))
-    release(new Response(JSON.stringify({ active: true, expires_at: '2099-01-01T00:00:00.000Z', scope: ['orders:read'] }), { headers: { 'content-type': 'application/json' } }))
+    release(new Response(JSON.stringify({ ...identity, scopes: ['orders:read'] }), { headers: { 'content-type': 'application/json' } }))
     await h.started()
     expect((h.storage.values[key] as { sourceTabId: number }).sourceTabId).toBe(7)
     await h.dispatch()
@@ -187,8 +185,8 @@ describe('source capture and delayed context fences', () => {
     await rejection
     release()
     expect(await callback).toMatchObject({ ok: false })
-    expect(await runtime.getSession()).toEqual({ status: 'signed-out' })
-    expect(h.fetch).toHaveBeenCalledTimes(2)
+    expect(await runtime.restore()).toEqual({ status: 'signed-out' })
+    expect(h.fetch).toHaveBeenCalledTimes(3)
   })
 
   it('expires a hanging prepare without creating an authorization tab', async () => {
@@ -199,8 +197,7 @@ describe('source capture and delayed context fences', () => {
     await runtime.ready()
     vi.useFakeTimers()
     const rejection = expect(runtime.login()).rejects.toMatchObject({ code: 'interaction_cancelled' })
-    await vi.advanceTimersByTimeAsync(0)
-    expect(context.prepare).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(context.prepare).toHaveBeenCalledOnce())
     await vi.advanceTimersByTimeAsync(1_001)
     await rejection
     expect(h.chrome.tabs.create).not.toHaveBeenCalled()
@@ -225,7 +222,7 @@ describe('strict terminal hook failure clears prior sessions', () => {
     ['beforeExchange', 'close'], ['beforeSessionCommit', 'close'],
   ] as const)('settles hanging %s after %s before releasing the hook', async (phase, terminal) => {
     const h = contextTabHarness()
-    h.storage.values['q1travel.appAuthorization.session.v1'] = { accessToken: 'o'.repeat(43), tokenType: 'Bearer', expiresAt: '2099-01-01T00:00:00.000Z', scopes: ['orders:read'] }
+    await h.seed()
     const context = port()
     let release!: () => void
     context.assertCurrent.mockImplementation(async (input) => {
@@ -243,11 +240,11 @@ describe('strict terminal hook failure clears prior sessions', () => {
       if (terminal === 'close') await h.chrome.tabs.remove(11)
       expect(await login).toMatchObject({ code: 'interaction_cancelled' })
       expect(await callback).toMatchObject({ ok: false, error: { code: 'interaction_cancelled' } })
-      expect(await runtime.getSession()).toEqual({ status: 'signed-out' })
-      await expect(runtime.authorizedFetch('https://api.example.test/orders')).rejects.toMatchObject({ code: 'session_expired' })
+      expect(await runtime.restore()).toEqual({ status: 'signed-out' })
+      await expect(runtime.authorizedFetch('https://api.example.test/v1/orders')).rejects.toMatchObject({ code: 'session_expired' })
       expect(h.storage.values[key]).toBeUndefined()
       const paths = h.fetch.mock.calls.map(([url]) => new URL(String(url)).pathname.split('/').at(-1))
-      expect(paths).toEqual(phase === 'beforeSessionCommit' ? ['token', 'revoke'] : [])
+      expect(paths).toEqual(phase === 'beforeSessionCommit' ? ['revoke', 'token', 'identity', 'revoke'] : ['revoke'])
       release()
       await Promise.resolve()
       expect(changes.mock.calls.some(([session]) => session.status === 'authenticated')).toBe(false)
@@ -260,10 +257,10 @@ describe('strict terminal hook failure clears prior sessions', () => {
 
   it.each(['timeout', 'close', 'logout'] as const)('reports unconfirmed acquired-token compensation after %s', async (terminal) => {
     const h = contextTabHarness()
-    h.storage.values['q1travel.appAuthorization.session.v1'] = { accessToken: 'o'.repeat(43), tokenType: 'Bearer', expiresAt: '2099-01-01T00:00:00.000Z', scopes: ['orders:read'] }
+    await h.seed()
     const implementation = h.fetch.getMockImplementation()!
     h.fetch.mockImplementation(async (url, init) => {
-      if (String(url).endsWith('/revoke') && new URLSearchParams(String(init?.body)).get('token') === 't'.repeat(43)) throw new Error('offline')
+      if (String(url).endsWith('/revoke') && new URLSearchParams(String(init?.body)).get('token') === grant.refresh_token) throw new Error('offline')
       return implementation(url, init)
     })
     const context = port()
@@ -282,8 +279,8 @@ describe('strict terminal hook failure clears prior sessions', () => {
       if (terminal === 'logout') await runtime.logout()
       expect(await login).toMatchObject({ code: 'revocation_unconfirmed' })
       expect(await callback).toMatchObject({ ok: false, error: { code: 'revocation_unconfirmed' } })
-      expect(await runtime.getSession()).toEqual({ status: 'signed-out' })
-      expect(h.fetch).toHaveBeenCalledTimes(terminal === 'logout' ? 3 : 2)
+      expect(await runtime.restore()).toEqual({ status: 'signed-out' })
+      expect(h.fetch).toHaveBeenCalledTimes(4)
     } finally {
       release?.()
       await callback
@@ -295,7 +292,7 @@ describe('strict terminal hook failure clears prior sessions', () => {
 describe('terminal compensation ownership', () => {
   it.each(['beforeExchange', 'beforeSessionCommit'] as const)('preserves a new session after timed-out %s returns late', async (phase) => {
     const h = contextTabHarness()
-    h.storage.values['q1travel.appAuthorization.session.v1'] = { accessToken: 'o'.repeat(43), tokenType: 'Bearer', expiresAt: '2099-01-01T00:00:00.000Z', scopes: ['orders:read'] }
+    await h.seed()
     const context = port()
     let release!: () => void
     context.assertCurrent.mockImplementation(async (input) => {
@@ -315,36 +312,36 @@ describe('terminal compensation ownership', () => {
     await h.started()
     expect(await h.dispatch()).toEqual({ ok: true })
     await expect(login).resolves.toMatchObject({ status: 'authenticated' })
-    const snapshot = structuredClone(h.storage.values['q1travel.appAuthorization.session.v1'])
+    const snapshot = (await h.repository.read())?.version
     release()
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(h.storage.values['q1travel.appAuthorization.session.v1']).toEqual(snapshot)
+    expect((await h.repository.read())?.version).toEqual(snapshot)
     expect(changes).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'authenticated' }))
   })
 
   it('compensates a cancelled late token response without clearing a newer session', async () => {
     const h = contextTabHarness()
-    h.storage.values['q1travel.appAuthorization.session.v1'] = { accessToken: 'o'.repeat(43), tokenType: 'Bearer', expiresAt: '2099-01-01T00:00:00.000Z', scopes: ['orders:read'] }
+    await h.seed()
     let release!: (value: Response) => void
-    h.fetch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
     const runtime = h.create({ authorizationContextPort: port() })
     const failed = runtime.login().catch((error: unknown) => error)
     await h.started()
+    h.fetch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
     const oldCallback = h.dispatch()
     await vi.waitFor(() => expect(release).toBeTypeOf('function'))
     await h.chrome.tabs.remove(11)
     expect(await failed).toMatchObject({ code: 'interaction_cancelled' })
-    expect(await runtime.getSession()).toEqual({ status: 'signed-out' })
+    expect(await runtime.restore()).toEqual({ status: 'signed-out' })
     h.chrome.tabs.update.mockClear()
     const login = runtime.login()
     await h.started()
     await h.dispatch()
     await login
-    const snapshot = structuredClone(h.storage.values['q1travel.appAuthorization.session.v1'])
-    release(new Response(JSON.stringify({ access_token: 'l'.repeat(43), token_type: 'Bearer', expires_in: 28_800, scope: 'orders:read' }), { headers: { 'content-type': 'application/json' } }))
+    const snapshot = (await h.repository.read())?.version
+    release(new Response(JSON.stringify({ ...grant, refresh_token: 'late-refresh', scope: 'orders:read' }), { headers: { 'content-type': 'application/json' } }))
     expect(await oldCallback).toMatchObject({ ok: false })
-    expect(h.storage.values['q1travel.appAuthorization.session.v1']).toEqual(snapshot)
+    expect((await h.repository.read())?.version).toEqual(snapshot)
     const revoked = h.fetch.mock.calls.filter(([url]) => String(url).endsWith('/revoke')).map(([, init]) => new URLSearchParams(String(init?.body)).get('token'))
-    expect(revoked).toEqual(['l'.repeat(43)])
+    expect(revoked).toEqual(['prior-refresh', 'late-refresh'])
   })
 })

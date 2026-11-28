@@ -29,7 +29,7 @@ export const parseRequest = (value: unknown): AuthRequest | null => {
     value.protocol !== AUTH_PROTOCOL ||
     typeof value.requestId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/u.test(value.requestId) ||
-    !['login', 'logout', 'restore', 'refresh', 'getIdentity'].includes(String(value.action))
+    typeof value.action !== 'string' || !['login', 'logout', 'restore', 'refresh', 'getIdentity'].includes(value.action)
   ) return null
   return value as unknown as AuthRequest
 }

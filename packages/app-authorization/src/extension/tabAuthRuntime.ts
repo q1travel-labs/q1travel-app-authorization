@@ -376,6 +376,7 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
     async logout() {
       generation += 1
       // Fence token exchange immediately, before waiting behind the callback queue.
+      void cancelCompletion().catch(() => undefined)
       const logout = base.logout()
       await serial(async () => {
         await startup

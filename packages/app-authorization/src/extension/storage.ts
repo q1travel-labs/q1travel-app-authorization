@@ -1,3 +1,4 @@
+import type { ResolvedAuthConfig } from '../core/config.js'
 import type { AuthIdentity } from '../core/types.js'
 import { AppAuthorizationError, AuthErrorCode } from '../core/types.js'
 
@@ -22,6 +23,10 @@ export interface StoredSession extends TokenGrant {
 
 export type SessionRecord = StoredSession | { readonly rotating: true; readonly version: string }
 const unavailable = () => new AppAuthorizationError(AuthErrorCode.storageUnavailable)
+
+export function sessionNamespace(config: Pick<ResolvedAuthConfig, 'tokenUrl' | 'identityUrl' | 'clientId' | 'redirectUri' | 'scopes'>) {
+  return JSON.stringify([config.tokenUrl, config.identityUrl, config.clientId, config.redirectUri, [...config.scopes].sort()])
+}
 
 export class SessionRepository {
   constructor(readonly name: string, private readonly database: IDBFactory) {}

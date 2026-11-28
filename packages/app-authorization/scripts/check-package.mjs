@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 const expected = new Set([
   'CHANGELOG.md',
   'README.md',
+  'fixtures/errors.json',
   'dist/core/callback.d.ts',
   'dist/core/callback.js',
   'dist/core/config.d.ts',

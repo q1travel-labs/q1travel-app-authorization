@@ -1,4 +1,5 @@
 export const AuthErrorCode = Object.freeze({
+  invalidDpopProof: 'invalid_dpop_proof',
   nonceChallenge: 'use_dpop_nonce',
   reauthorizationRequired: 'reauthorization_required',
   configurationInvalid: 'configuration_invalid',
@@ -15,7 +16,6 @@ export const AuthErrorCode = Object.freeze({
   responseInvalid: 'response_invalid',
   storageUnavailable: 'storage_unavailable',
   sessionExpired: 'session_expired',
-  sessionRevoked: 'session_revoked',
   forbidden: 'forbidden',
   revocationUnconfirmed: 'revocation_unconfirmed',
   requestNotAllowed: 'request_not_allowed',
@@ -28,6 +28,7 @@ export type AuthErrorCode =
 const ERROR_DETAILS: Readonly<
   Record<AuthErrorCode, { message: string; retryable: boolean }>
 > = Object.freeze({
+  invalid_dpop_proof: { message: 'The server rejected the proof of possession.', retryable: false },
   use_dpop_nonce: { message: 'The server requires a fresh DPoP nonce.', retryable: false },
   reauthorization_required: { message: 'Sign in again to authorize this installation.', retryable: false },
   configuration_invalid: { message: 'Authorization configuration is invalid.', retryable: false },
@@ -38,13 +39,12 @@ const ERROR_DETAILS: Readonly<
   state_mismatch: { message: 'Authorization state did not match.', retryable: false },
   network_unavailable: { message: 'The network is unavailable.', retryable: true },
   oauth_invalid_request: { message: 'The authorization request was rejected.', retryable: false },
-  oauth_invalid_grant: { message: 'The authorization grant is invalid or expired.', retryable: true },
+  oauth_invalid_grant: { message: 'Sign in again to obtain a new grant.', retryable: false },
   invalid_token: { message: 'The access token is invalid or expired.', retryable: true },
   server_unavailable: { message: 'The authorization service is unavailable.', retryable: true },
   response_invalid: { message: 'The authorization response is invalid.', retryable: true },
   storage_unavailable: { message: 'Secure session storage is unavailable.', retryable: true },
   session_expired: { message: 'The authorization session expired.', retryable: true },
-  session_revoked: { message: 'The authorization session was revoked.', retryable: true },
   forbidden: { message: 'The requested operation is not permitted.', retryable: false },
   revocation_unconfirmed: { message: 'Remote revocation could not be confirmed.', retryable: true },
   request_not_allowed: { message: 'The request target is not allowed.', retryable: false },
