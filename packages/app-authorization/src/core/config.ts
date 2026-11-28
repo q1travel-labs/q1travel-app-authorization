@@ -2,28 +2,27 @@ import { protocolEndpoints } from './protocolEndpoints.js'
 import { AppAuthorizationError, AuthErrorCode } from './types.js'
 
 export interface AuthConfig {
+  readonly installationId: string
   readonly clientId: string
   readonly redirectUri: string
   readonly scopes: readonly string[]
-  /** Origin serving the five public authorization endpoints. */
+  /** Origin serving the OAuth endpoints. */
   readonly authOrigin: string
   /** Only this origin can receive authorizedFetch requests. */
   readonly apiOrigin: string
-  readonly pathPrefix?: string
   readonly allowInsecureLoopback?: boolean
 }
 
 export interface ResolvedAuthConfig extends Readonly<ReturnType<typeof protocolEndpoints>> {
+  readonly installationId: string
   readonly clientId: string
   readonly redirectUri: string
   readonly scopes: readonly string[]
   readonly apiOrigin: string
-  readonly pathPrefix: string
 }
 
 const CLIENT_ID_PATTERN = /^[A-Za-z0-9._~-]{1,128}$/u
 const SCOPE_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/u
-const PATH_PREFIX_PATTERN = /^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/u
 
 const invalidConfiguration = (): never => {
   throw new AppAuthorizationError(AuthErrorCode.configurationInvalid)
@@ -52,11 +51,11 @@ const requireOrigin = (value: string, allowInsecureLoopback: boolean): string =>
 
 export const resolveAuthConfig = (config: AuthConfig, allowWebRedirect = false): ResolvedAuthConfig => {
   if (!config || typeof config !== 'object') invalidConfiguration()
-  if (!CLIENT_ID_PATTERN.test(config.clientId)) invalidConfiguration()
+  if (typeof config.installationId !== 'string' || !/^[a-p]{32}$/u.test(config.installationId)) invalidConfiguration()
+  if (typeof config.clientId !== 'string' || !CLIENT_ID_PATTERN.test(config.clientId)) invalidConfiguration()
   if (
     !Array.isArray(config.scopes) ||
-    config.scopes.length === 0 ||
-    config.scopes.some((scope) => !SCOPE_PATTERN.test(scope)) ||
+    config.scopes.some((scope) => typeof scope !== 'string' || !SCOPE_PATTERN.test(scope)) ||
     new Set(config.scopes).size !== config.scopes.length
   ) {
     invalidConfiguration()
@@ -66,7 +65,7 @@ export const resolveAuthConfig = (config: AuthConfig, allowWebRedirect = false):
   if (
     (redirect.protocol !== 'https:' && !(allowWebRedirect && config.allowInsecureLoopback === true &&
       redirect.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(redirect.hostname))) ||
-    (!allowWebRedirect && !/^[a-p]{32}\.chromiumapp\.org$/u.test(redirect.hostname)) ||
+    (!allowWebRedirect && redirect.hostname !== config.installationId + '.chromiumapp.org') ||
     (!allowWebRedirect && redirect.port !== '') ||
     redirect.username !== '' ||
     redirect.password !== '' ||
@@ -82,22 +81,12 @@ export const resolveAuthConfig = (config: AuthConfig, allowWebRedirect = false):
   const apiOrigin = requireOrigin(config.apiOrigin, allowLoopback)
   if (authOrigin === apiOrigin) invalidConfiguration()
 
-  const pathPrefix = config.pathPrefix ?? '/api'
-  if (
-    (pathPrefix !== '' && !PATH_PREFIX_PATTERN.test(pathPrefix)) ||
-    pathPrefix.includes('..') ||
-    pathPrefix.split('/').includes('.') ||
-    (pathPrefix.length > 1 && pathPrefix.endsWith('/'))
-  ) {
-    invalidConfiguration()
-  }
-  const normalizedPathPrefix = pathPrefix === '/' ? '' : pathPrefix
   return Object.freeze({
+    installationId: config.installationId,
     clientId: config.clientId,
     redirectUri: config.redirectUri,
     scopes: Object.freeze([...config.scopes]),
     apiOrigin,
-    pathPrefix: normalizedPathPrefix,
-    ...protocolEndpoints(authOrigin + normalizedPathPrefix),
+    ...protocolEndpoints(authOrigin, apiOrigin),
   })
 }

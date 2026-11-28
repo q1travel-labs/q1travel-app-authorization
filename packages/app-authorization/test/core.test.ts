@@ -12,6 +12,7 @@ const cryptoPort = {
 }
 
 const authConfig = {
+  installationId: 'abcdefghijklmnopabcdefghijklmnop',
   clientId: 'extension-client',
   redirectUri: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/callback',
   scopes: ['orders:read'],
@@ -55,29 +56,13 @@ describe('authorization configuration', () => {
       .toThrowError(expect.objectContaining({ code: 'configuration_invalid' }))
   })
 
-  it.each(['', '/'])('normalizes root pathPrefix %j to unprefixed endpoints', (pathPrefix) => {
-    expect(resolveAuthConfig({ ...authConfig, pathPrefix })).toMatchObject({
-      contextsUrl: 'http://localhost:3012/app-authorizations/v1/contexts',
-      authorizeUrl: 'http://localhost:3012/app-authorizations/v1/authorize',
-      tokenUrl: 'http://localhost:3012/app-authorizations/v1/token',
-      revokeUrl: 'http://localhost:3012/app-authorizations/v1/revoke',
-      sessionUrl: 'http://localhost:3012/app-authorizations/v1/session',
+  it('Given 两个主机 / When 解析端点 / Then REST 与 OAuth 请求各自发送到登记地址', () => {
+    expect(resolveAuthConfig(authConfig)).toMatchObject({
+      contextsUrl: authConfig.authOrigin + '/oauth/contexts',
+      tokenUrl: authConfig.authOrigin + '/oauth/token',
+      revokeUrl: authConfig.authOrigin + '/oauth/revoke',
+      identityUrl: authConfig.apiOrigin + '/v1/identity',
     })
-  })
-
-  it.each([
-    'api',
-    '/api/',
-    '/api/../admin',
-    '/./api',
-    '/api/./admin',
-    '/api/.',
-    '/api?debug=true',
-    '/api#debug',
-  ])('still rejects unsafe pathPrefix %j', (pathPrefix) => {
-    expect(() => resolveAuthConfig({ ...authConfig, pathPrefix })).toThrowError(
-      expect.objectContaining({ code: 'configuration_invalid' }),
-    )
   })
 })
 
@@ -85,7 +70,8 @@ describe('PKCE authorization request', () => {
   it('uses a 43-character URL-safe verifier and an S256 challenge', async () => {
     const request = await createAuthorizationRequest(
       {
-        authorizeUrl: 'https://accounts.example.com/api/app-authorizations/v1/authorize',
+        resource: authConfig.apiOrigin + '/v1',
+        authorizeUrl: authConfig.authOrigin + '/oauth/authorize',
         clientId: 'extension-client',
         redirectUri: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/callback',
         scopes: ['orders:read', 'orders:write'],
@@ -117,6 +103,7 @@ describe('authorization callback validation', () => {
         `${redirectUri}?code=${'c'.repeat(43)}&state=${'x'.repeat(43)}`,
         redirectUri,
         state,
+        authConfig.authOrigin,
       ),
     ).toThrowError(expect.objectContaining({ code: 'state_mismatch' }))
   })

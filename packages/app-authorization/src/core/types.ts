@@ -1,4 +1,6 @@
 export const AuthErrorCode = Object.freeze({
+  nonceChallenge: 'use_dpop_nonce',
+  reauthorizationRequired: 'reauthorization_required',
   configurationInvalid: 'configuration_invalid',
   interactionCancelled: 'interaction_cancelled',
   interactionFailed: 'interaction_failed',
@@ -26,6 +28,8 @@ export type AuthErrorCode =
 const ERROR_DETAILS: Readonly<
   Record<AuthErrorCode, { message: string; retryable: boolean }>
 > = Object.freeze({
+  use_dpop_nonce: { message: 'The server requires a fresh DPoP nonce.', retryable: false },
+  reauthorization_required: { message: 'Sign in again to authorize this installation.', retryable: false },
   configuration_invalid: { message: 'Authorization configuration is invalid.', retryable: false },
   interaction_cancelled: { message: 'Authorization was cancelled.', retryable: true },
   interaction_failed: { message: 'Authorization interaction failed.', retryable: true },
@@ -60,10 +64,19 @@ export class AppAuthorizationError extends Error {
   }
 }
 
+export interface AuthIdentity {
+  readonly object: 'identity'
+  readonly principal_type: 'user'
+  readonly user: string
+  readonly organization: string
+  readonly scopes: readonly string[]
+  readonly store_ids: readonly string[] | null
+}
+
 export interface AuthenticatedSession {
   readonly status: 'authenticated'
   readonly expiresAt: string
-  readonly scopes: readonly string[]
+  readonly identity: AuthIdentity
 }
 
 export type AuthSession =

@@ -2,18 +2,18 @@ import { isAuthorizationContextToken, prepareAuthorizationContext, type Authoriz
 import type { AuthorizationSourceMetadata } from './ports.js'
 import { validateAuthorizationCallback } from '../core/callback.js'
 import { resolveAuthConfig, type AuthConfig } from '../core/config.js'
-import { browserCryptoPort, createAuthorizationRequest, type CryptoPort } from '../core/pkce.js'
+import { browserCryptoPort } from './webCrypto.js'
+import { createAuthorizationRequest, type CryptoPort } from '../core/pkce.js'
 import { AppAuthorizationError, AuthErrorCode, type AuthSession } from '../core/types.js'
 import { installRuntime } from './listener.js'
 import { serializeError } from './protocol.js'
-import { createAuthRuntimeWithDependencies, type AuthRuntime } from './runtime.js'
+import { createAuthRuntimeWithDependencies, requireServiceWorker, type AuthRuntime } from './runtime.js'
 import type { FetchPort } from './http.js'
 import type { StoredTransaction } from './storage.js'
 import type { AuthTab, ExternalCallbackSender, TabAuthChromePort } from './tabAuthPorts.js'
 
 export const TAB_AUTH_CALLBACK = 'q1travel.appAuthorization.callback.v1'
-const LEGACY_KEY = 'q1travel.appAuthorization.tabTransaction.v1'
-const CONTEXT_KEY = 'q1travel.appAuthorization.tabTransaction.v2'
+const KEY = 'q1travel.oauth.tabTransaction'
 const ALARM = 'q1travel.appAuthorization.tabTimeout.v1'
 const opaque = /^[A-Za-z0-9_-]{43}$/u
 const id = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0
@@ -42,15 +42,20 @@ export interface AdjacentTabAuthRuntimeDependencies extends AdjacentTabAuthRunti
   readonly fetch: FetchPort
   readonly crypto?: CryptoPort
   readonly now?: () => number
+  readonly database?: IDBFactory
+  readonly locks?: LockManager
   readonly verifyOnStartup?: boolean
 }
 
 export const createAdjacentTabAuthRuntime = (
   config: AuthConfig,
   options: AdjacentTabAuthRuntimeOptions,
-): AuthRuntime => createAdjacentTabAuthRuntimeWithDependencies(config, {
-  ...options, fetch: globalThis.fetch.bind(globalThis), verifyOnStartup: true,
-})
+): AuthRuntime => {
+  requireServiceWorker()
+  return createAdjacentTabAuthRuntimeWithDependencies(config, {
+    ...options, fetch: globalThis.fetch.bind(globalThis), verifyOnStartup: true,
+  })
+}
 
 export const createAdjacentTabAuthRuntimeWithDependencies = (
   input: AuthConfig,
@@ -64,7 +69,6 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
   }
   const { chrome } = options
   const storage = chrome.storage.session
-  const KEY = options.authorizationContextPort ? CONTEXT_KEY : LEGACY_KEY
   const now = options.now ?? Date.now
   let cancelResume!: () => Promise<void>
   let resume!: (callback: string, transaction: StoredTransaction) => Promise<AuthSession>
@@ -117,7 +121,7 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
     completionCancellation ??= cancelResume()
     return completionCancellation
   }
-  const cleanup = async (transaction: TabTransaction, restoreFocus: boolean, storageKey = KEY) => {
+  const cleanup = async (transaction: TabTransaction, restoreFocus: boolean) => {
     if (transaction.authTabId !== null) {
       const tabs = await chrome.tabs.query({})
       const auth = tabs.find((tab) => tab.id === transaction.authTabId)
@@ -141,7 +145,7 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
       }
     }
     await chrome.alarms.clear(ALARM)
-    await storage.remove(storageKey)
+    await storage.remove(KEY)
     knownAuthTabId = null
   }
   const terminate = async (transaction: TabTransaction, error: unknown) => {
@@ -155,16 +159,6 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
   }
   const startup = serial(async () => {
     await storage.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
-    const incompatibleKey = options.authorizationContextPort ? LEGACY_KEY : CONTEXT_KEY
-    const incompatible = (await storage.get(incompatibleKey))[incompatibleKey]
-    if (incompatible !== undefined) {
-      let old: TabTransaction | null = null
-      try { old = parse(incompatible, !options.authorizationContextPort) } catch { /* Invalid records cannot prove tab ownership. */ }
-      if (old) {
-        try { await cleanup(old, false, incompatibleKey) } catch { /* Never close a tab whose ownership changed. */ }
-      }
-      await storage.remove(incompatibleKey)
-    }
     let transaction: TabTransaction | null
     try { transaction = await load() } catch { return }
     if (!transaction) return
@@ -188,9 +182,10 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
 
   // Register synchronously at construction so Chrome can wake a suspended MV3 worker.
   chrome.runtime.onMessageExternal.addListener((message, sender, respond) => {
-    if (!record(message) || Object.keys(message).length !== 2 ||
+    if (!record(message) || Object.keys(message).length !== 4 || message.clientId !== config.clientId ||
+      message.extensionId !== chrome.runtime.id ||
       message.type !== TAB_AUTH_CALLBACK || typeof message.callbackUrl !== 'string' ||
-      message.callbackUrl.length > 2_048 || !trustedSender(sender, message.callbackUrl)) return
+      !trustedSender(sender, message.callbackUrl)) return
     const callbackUrl = message.callbackUrl
     const requestedGeneration = generation
     let claimed: TabTransaction | null = null
@@ -204,9 +199,9 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
       const auth = (await chrome.tabs.query({})).find((tab) => tab.id === transaction.authTabId)
       if (!auth || auth.openerTabId !== transaction.sourceTabId) throw fail()
       try {
-        validateAuthorizationCallback(callbackUrl, config.redirectUri, transaction.state)
+        validateAuthorizationCallback(callbackUrl, config.redirectUri, transaction.state, config.issuer)
       } catch (error) {
-        if (error instanceof AppAuthorizationError && error.code === AuthErrorCode.authorizationDenied) {
+        if (error instanceof AppAuthorizationError && [AuthErrorCode.authorizationDenied, AuthErrorCode.oauthInvalidRequest].some((code) => code === error.code)) {
           await terminate(transaction, error)
         }
         throw error
@@ -295,6 +290,7 @@ export const createAdjacentTabAuthRuntimeWithDependencies = (
           return
         } else throw fail()
       }
+      await base.logout()
       const source = await sourcePromise
       assertCurrentGeneration()
       if (!id(source.id) || !id(source.windowId) || !id(source.index) ||

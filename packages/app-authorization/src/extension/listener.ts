@@ -24,11 +24,7 @@ export const installRuntime = (
         ...(sender.frameId === undefined ? {} : { frameId: sender.frameId }),
         ...(sender.documentId === undefined ? {} : { documentId: sender.documentId }),
       })) : runtime.login()
-      : request.action === 'logout'
-        ? runtime.logout()
-        : request.action === 'verifySession'
-          ? runtime.verifySession()
-          : runtime.getSession()
+      : runtime[request.action]()
     void operation.then(
       (session) => sendResponse({
         protocol: AUTH_PROTOCOL,

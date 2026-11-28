@@ -17,7 +17,7 @@ export interface AuthorizationContextPort {
 }
 
 export const isAuthorizationContextToken = (value: unknown): value is string =>
-  typeof value === 'string' && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(value)
+  typeof value === 'string' && /^[\x21-\x7e]+$/u.test(value)
 
 export const prepareAuthorizationContext = async (
   port: AuthorizationContextPort,

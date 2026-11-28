@@ -4,6 +4,7 @@ export interface CryptoPort {
 }
 
 export interface AuthorizationRequestConfig {
+  readonly resource: string
   readonly authorizeUrl: string
   readonly clientId: string
   readonly redirectUri: string
@@ -17,7 +18,7 @@ export interface PreparedAuthorizationRequest {
   readonly state: string
 }
 
-const encodeBase64Url = (value: Uint8Array): string => {
+export const encodeBase64Url = (value: Uint8Array): string => {
   let binary = ''
   for (const byte of value) binary += String.fromCharCode(byte)
   return btoa(binary)
@@ -45,20 +46,11 @@ export const createAuthorizationRequest = async (
   const url = new URL(config.authorizeUrl)
   url.searchParams.set('client_id', config.clientId)
   url.searchParams.set('redirect_uri', config.redirectUri)
-  url.searchParams.set('scope', config.scopes.join(' '))
+  url.searchParams.set('response_type', 'code')
+  url.searchParams.set('resource', config.resource)
+  if (config.scopes.length) url.searchParams.set('scope', config.scopes.join(' '))
   url.searchParams.set('state', state)
   url.searchParams.set('code_challenge', challenge)
   url.searchParams.set('code_challenge_method', 'S256')
   return { authorizationUrl: url.toString(), codeChallenge: challenge, codeVerifier, state }
 }
-
-export const browserCryptoPort = (): CryptoPort => ({
-  randomBytes(length) {
-    return globalThis.crypto.getRandomValues(new Uint8Array(length))
-  },
-  async sha256(value) {
-    return new Uint8Array(
-      await globalThis.crypto.subtle.digest('SHA-256', Uint8Array.from(value).buffer),
-    )
-  },
-})
